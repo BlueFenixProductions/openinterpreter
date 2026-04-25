@@ -133,6 +133,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::MessagePhase;
@@ -164,6 +165,7 @@ use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::DeprecationNoticeEvent;
+use codex_protocol::protocol::DynamicToolCallResponseEvent;
 #[cfg(test)]
 use codex_protocol::protocol::ErrorEvent;
 #[cfg(test)]
@@ -3930,6 +3932,57 @@ impl ChatWidget {
         self.defer_or_handle(|q| q.push_mcp_end(ev), |s| s.handle_mcp_end_now(ev2));
     }
 
+    fn on_dynamic_tool_call_request(&mut self, ev: DynamicToolCallRequest) {
+        self.flush_answer_stream_with_separator();
+        self.flush_active_cell();
+        self.active_cell = Some(Box::new(history_cell::new_active_dynamic_tool_call(
+            ev.call_id,
+            ev.tool,
+            ev.arguments,
+            self.config.animations,
+        )));
+        self.bump_active_cell_revision();
+        self.request_redraw();
+    }
+
+    fn on_dynamic_tool_call_response(&mut self, ev: DynamicToolCallResponseEvent) {
+        self.flush_answer_stream_with_separator();
+
+        let DynamicToolCallResponseEvent {
+            call_id,
+            tool,
+            arguments,
+            content_items,
+            success,
+            error,
+            duration,
+            ..
+        } = ev;
+
+        match self.active_cell.as_mut().and_then(|cell| {
+            cell.as_any_mut()
+                .downcast_mut::<history_cell::DynamicToolCallCell>()
+        }) {
+            Some(cell) if cell.call_id() == call_id => {
+                cell.complete(duration, content_items, success, error);
+                self.bump_active_cell_revision();
+            }
+            _ => {
+                self.flush_active_cell();
+                let mut cell = history_cell::new_active_dynamic_tool_call(
+                    call_id,
+                    tool,
+                    arguments,
+                    self.config.animations,
+                );
+                cell.complete(duration, content_items, success, error);
+                self.active_cell = Some(Box::new(cell));
+                self.bump_active_cell_revision();
+            }
+        }
+        self.request_redraw();
+    }
+
     fn on_web_search_begin(&mut self, ev: WebSearchBeginEvent) {
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
@@ -6238,7 +6291,49 @@ impl ChatWidget {
                 reasoning_effort,
                 agents_states,
             }),
-            ThreadItem::DynamicToolCall { .. } => {}
+            ThreadItem::DynamicToolCall {
+                id,
+                tool,
+                arguments,
+                status,
+                content_items,
+                success,
+                duration_ms,
+            } => {
+                if matches!(
+                    status,
+                    codex_app_server_protocol::DynamicToolCallStatus::InProgress
+                ) {
+                    self.on_dynamic_tool_call_request(DynamicToolCallRequest {
+                        call_id: id,
+                        turn_id: turn_id.clone(),
+                        tool,
+                        arguments,
+                    });
+                } else {
+                    self.on_dynamic_tool_call_response(DynamicToolCallResponseEvent {
+                        call_id: id,
+                        turn_id: turn_id.clone(),
+                        tool,
+                        arguments,
+                        content_items: content_items
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                        success: success.unwrap_or_else(|| {
+                            matches!(
+                                status,
+                                codex_app_server_protocol::DynamicToolCallStatus::Completed
+                            )
+                        }),
+                        error: None,
+                        duration: Duration::from_millis(
+                            duration_ms.unwrap_or_default().max(0) as u64
+                        ),
+                    });
+                }
+            }
         }
 
         if matches!(replay_kind, Some(ReplayKind::ThreadSnapshot)) && turn_id.is_empty() {
@@ -6278,8 +6373,15 @@ impl ChatWidget {
             ServerRequest::ToolRequestUserInput { params, .. } => {
                 self.on_request_user_input(request_user_input_from_params(params));
             }
-            ServerRequest::DynamicToolCall { .. }
-            | ServerRequest::ChatgptAuthTokensRefresh { .. }
+            ServerRequest::DynamicToolCall { params, .. } => {
+                self.on_dynamic_tool_call_request(DynamicToolCallRequest {
+                    call_id: params.call_id,
+                    turn_id: params.turn_id,
+                    tool: params.tool,
+                    arguments: params.arguments,
+                });
+            }
+            ServerRequest::ChatgptAuthTokensRefresh { .. }
             | ServerRequest::ApplyPatchApproval { .. }
             | ServerRequest::ExecCommandApproval { .. } => {
                 if replay_kind.is_none() {
@@ -6687,6 +6789,19 @@ impl ChatWidget {
             ThreadItem::ImageGeneration { id, .. } => {
                 self.on_image_generation_begin(ImageGenerationBeginEvent { call_id: id });
             }
+            ThreadItem::DynamicToolCall {
+                id,
+                tool,
+                arguments,
+                ..
+            } => {
+                self.on_dynamic_tool_call_request(DynamicToolCallRequest {
+                    call_id: id,
+                    turn_id: notification.turn_id,
+                    tool,
+                    arguments,
+                });
+            }
             ThreadItem::CollabAgentToolCall {
                 id,
                 tool,
@@ -6999,6 +7114,8 @@ impl ChatWidget {
             EventMsg::ImageGenerationEnd(ev) => self.on_image_generation_end(ev),
             EventMsg::McpToolCallBegin(ev) => self.on_mcp_tool_call_begin(ev),
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
+            EventMsg::DynamicToolCallRequest(ev) => self.on_dynamic_tool_call_request(ev),
+            EventMsg::DynamicToolCallResponse(ev) => self.on_dynamic_tool_call_response(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
             EventMsg::WebSearchEnd(ev) => self.on_web_search_end(ev),
             EventMsg::GetHistoryEntryResponse(ev) => self.handle_history_entry_response(ev),
@@ -7077,8 +7194,6 @@ impl ChatWidget {
             | EventMsg::PatchApplyUpdated(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
-            | EventMsg::DynamicToolCallRequest(_)
-            | EventMsg::DynamicToolCallResponse(_)
             | EventMsg::RealtimeConversationListVoicesResponse(_) => {}
             EventMsg::HookStarted(event) => self.on_hook_started(event),
             EventMsg::HookCompleted(event) => self.on_hook_completed(event),

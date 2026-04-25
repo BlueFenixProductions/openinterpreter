@@ -328,6 +328,68 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
     );
 }
 
+#[tokio::test]
+async fn live_app_server_dynamic_tool_call_renders_visible_tool_activity() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::DynamicToolCall {
+                id: "tool-1".to_string(),
+                tool: "Read".to_string(),
+                arguments: json!({ "file_path": "README.md" }),
+                status: AppServerDynamicToolCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    let running = active_blob(&chat);
+    assert!(
+        running.contains("Calling Read"),
+        "expected in-progress dynamic tool call to be visible, got: {running}"
+    );
+    assert!(
+        running.contains("README.md"),
+        "expected dynamic tool arguments to be visible, got: {running}"
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::DynamicToolCall {
+                id: "tool-1".to_string(),
+                tool: "Read".to_string(),
+                arguments: json!({ "file_path": "README.md" }),
+                status: AppServerDynamicToolCallStatus::Completed,
+                content_items: Some(vec![AppServerDynamicToolCallOutputContentItem::InputText {
+                    text: "Open Interpreter README excerpt".to_string(),
+                }]),
+                success: Some(true),
+                duration_ms: Some(12),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let completed = active_blob(&chat);
+    assert!(
+        completed.contains("Called Read"),
+        "expected completed dynamic tool call to be visible, got: {completed}"
+    );
+    assert!(
+        completed.contains("Open Interpreter README excerpt"),
+        "expected dynamic tool result content to be visible, got: {completed}"
+    );
+}
+
 #[test]
 fn app_server_patch_changes_to_core_preserves_diffs() {
     let changes = app_server_patch_changes_to_core(vec![FileUpdateChange {

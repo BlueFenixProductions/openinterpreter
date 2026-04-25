@@ -20,8 +20,14 @@ use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::error::CodexErr;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::protocol::DynamicToolCallResponseEvent;
+use codex_protocol::protocol::EventMsg;
 use codex_tools::ToolSpec;
 
 #[derive(Clone)]
@@ -67,13 +73,77 @@ impl ToolCallRuntime {
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<ResponseInputItem, CodexErr>> {
         let error_call = call.clone();
+        let dynamic_call = visible_harness_function_tool_call(&call);
+        let started = Instant::now();
+        let event_session = Arc::clone(&self.session);
+        let event_turn_context = Arc::clone(&self.turn_context);
+        if let Some((tool, arguments)) = dynamic_call.clone() {
+            let session = Arc::clone(&event_session);
+            let turn_context = Arc::clone(&event_turn_context);
+            let call_id = call.call_id.clone();
+            tokio::spawn(async move {
+                session
+                    .send_event(
+                        turn_context.as_ref(),
+                        EventMsg::DynamicToolCallRequest(DynamicToolCallRequest {
+                            call_id,
+                            turn_id: turn_context.sub_id.clone(),
+                            tool,
+                            arguments,
+                        }),
+                    )
+                    .await;
+            });
+        }
         let future =
             self.handle_tool_call_with_source(call, ToolCallSource::Direct, cancellation_token);
         async move {
             match future.await {
-                Ok(response) => Ok(response.into_response()),
-                Err(FunctionCallError::Fatal(message)) => Err(CodexErr::Fatal(message)),
-                Err(other) => Ok(Self::failure_response(error_call, other)),
+                Ok(response) => {
+                    let response_input = response.into_response();
+                    emit_visible_harness_function_tool_response(
+                        event_session.as_ref(),
+                        event_turn_context.as_ref(),
+                        &error_call,
+                        dynamic_call,
+                        &response_input,
+                        started.elapsed(),
+                        None,
+                    )
+                    .await;
+                    Ok(response_input)
+                }
+                Err(FunctionCallError::Fatal(message)) => {
+                    emit_visible_harness_function_tool_response(
+                        event_session.as_ref(),
+                        event_turn_context.as_ref(),
+                        &error_call,
+                        dynamic_call,
+                        &Self::failure_response(
+                            error_call.clone(),
+                            FunctionCallError::Fatal(message.clone()),
+                        ),
+                        started.elapsed(),
+                        Some(message.clone()),
+                    )
+                    .await;
+                    Err(CodexErr::Fatal(message))
+                }
+                Err(other) => {
+                    let error = other.to_string();
+                    let response_input = Self::failure_response(error_call.clone(), other);
+                    emit_visible_harness_function_tool_response(
+                        event_session.as_ref(),
+                        event_turn_context.as_ref(),
+                        &error_call,
+                        dynamic_call,
+                        &response_input,
+                        started.elapsed(),
+                        Some(error),
+                    )
+                    .await;
+                    Ok(response_input)
+                }
             }
         }
         .in_current_span()
@@ -138,6 +208,104 @@ impl ToolCallRuntime {
             })?
         }
         .in_current_span()
+    }
+}
+
+fn visible_harness_function_tool_call(call: &ToolCall) -> Option<(String, serde_json::Value)> {
+    let tool = call.tool_name.display();
+    if !matches!(
+        tool.as_str(),
+        "Read"
+            | "Write"
+            | "Edit"
+            | "Glob"
+            | "Grep"
+            | "TodoWrite"
+            | "Agent"
+            | "LSP"
+            | "WebFetch"
+            | "WebSearch"
+            | "AskUserQuestion"
+            | "CronCreate"
+            | "CronDelete"
+            | "CronList"
+            | "ScheduleWakeup"
+            | "ReadFile"
+            | "WriteFile"
+            | "ReadManyFiles"
+            | "Shell"
+    ) {
+        return None;
+    }
+    let ToolPayload::Function { arguments } = &call.payload else {
+        return None;
+    };
+    let arguments = serde_json::from_str(arguments)
+        .unwrap_or_else(|_| serde_json::Value::String(arguments.clone()));
+    Some((tool, arguments))
+}
+
+async fn emit_visible_harness_function_tool_response(
+    session: &Session,
+    turn_context: &TurnContext,
+    call: &ToolCall,
+    dynamic_call: Option<(String, serde_json::Value)>,
+    response_input: &ResponseInputItem,
+    duration: std::time::Duration,
+    error: Option<String>,
+) {
+    let Some((tool, arguments)) = dynamic_call else {
+        return;
+    };
+    let content_items = dynamic_tool_content_items_from_response(response_input);
+    let success = dynamic_tool_success_from_response(response_input).unwrap_or(error.is_none());
+    session
+        .send_event(
+            turn_context,
+            EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {
+                call_id: call.call_id.clone(),
+                turn_id: turn_context.sub_id.clone(),
+                tool,
+                arguments,
+                content_items,
+                success,
+                error,
+                duration,
+            }),
+        )
+        .await;
+}
+
+fn dynamic_tool_content_items_from_response(
+    response_input: &ResponseInputItem,
+) -> Vec<DynamicToolCallOutputContentItem> {
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response_input else {
+        return Vec::new();
+    };
+    match &output.body {
+        FunctionCallOutputBody::Text(text) => {
+            vec![DynamicToolCallOutputContentItem::InputText { text: text.clone() }]
+        }
+        FunctionCallOutputBody::ContentItems(items) => items
+            .iter()
+            .map(|item| match item {
+                FunctionCallOutputContentItem::InputText { text } => {
+                    DynamicToolCallOutputContentItem::InputText { text: text.clone() }
+                }
+                FunctionCallOutputContentItem::InputImage { image_url, .. } => {
+                    DynamicToolCallOutputContentItem::InputImage {
+                        image_url: image_url.clone(),
+                    }
+                }
+            })
+            .collect(),
+    }
+}
+
+fn dynamic_tool_success_from_response(response_input: &ResponseInputItem) -> Option<bool> {
+    match response_input {
+        ResponseInputItem::FunctionCallOutput { output, .. } => output.success,
+        _ => None,
     }
 }
 
