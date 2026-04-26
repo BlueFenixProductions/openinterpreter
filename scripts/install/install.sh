@@ -2,12 +2,13 @@
 
 set -eu
 
+GITHUB_REPO="${OPEN_INTERPRETER_GITHUB_REPO:-KillianLucas/openinterpreter}"
 RELEASE="latest"
 
-BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
-BIN_PATH="$BIN_DIR/codex"
-CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
-STANDALONE_ROOT="$CODEX_HOME_DIR/packages/standalone"
+BIN_DIR="${OPEN_INTERPRETER_INSTALL_DIR:-$HOME/.local/bin}"
+BIN_PATH="$BIN_DIR/interpreter"
+OPEN_INTERPRETER_HOME_DIR="${OPEN_INTERPRETER_HOME:-$HOME/.openinterpreter}"
+STANDALONE_ROOT="$OPEN_INTERPRETER_HOME_DIR/packages/standalone"
 RELEASES_DIR="$STANDALONE_ROOT/releases"
 CURRENT_LINK="$STANDALONE_ROOT/current"
 LOCK_FILE="$STANDALONE_ROOT/install.lock"
@@ -16,8 +17,6 @@ LOCK_STALE_AFTER_SECS=600
 
 path_action="already"
 path_profile=""
-conflict_manager=""
-conflict_path=""
 lock_kind=""
 tmp_dir=""
 
@@ -29,13 +28,22 @@ warn() {
   printf 'WARNING: %s\n' "$1" >&2
 }
 
+github_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    printf '%s\n' "$GITHUB_TOKEN"
+    return
+  fi
+
+  if [ -n "${GH_TOKEN:-}" ]; then
+    printf '%s\n' "$GH_TOKEN"
+    return
+  fi
+}
+
 normalize_version() {
   case "$1" in
     "" | latest)
       printf 'latest\n'
-      ;;
-    rust-v*)
-      printf '%s\n' "${1#rust-v}"
       ;;
     v*)
       printf '%s\n' "${1#v}"
@@ -57,9 +65,19 @@ parse_args() {
         RELEASE="$2"
         shift
         ;;
+      --repo)
+        if [ "$#" -lt 2 ]; then
+          echo "--repo requires owner/name." >&2
+          exit 1
+        fi
+        GITHUB_REPO="$2"
+        shift
+        ;;
       --help | -h)
         cat <<EOF
-Usage: install.sh [--release VERSION]
+Usage: install.sh [--release VERSION] [--repo OWNER/REPO]
+
+Installs or updates Open Interpreter from GitHub Releases.
 EOF
         exit 0
         ;;
@@ -75,35 +93,53 @@ EOF
 download_file() {
   url="$1"
   output="$2"
+  token="$(github_token || true)"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$output"
+    if [ -n "$token" ]; then
+      curl -fsSL -H "Authorization: Bearer $token" -H "X-GitHub-Api-Version: 2022-11-28" "$url" -o "$output"
+    else
+      curl -fsSL "$url" -o "$output"
+    fi
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget -q -O "$output" "$url"
+    if [ -n "$token" ]; then
+      wget -q --header="Authorization: Bearer $token" --header="X-GitHub-Api-Version: 2022-11-28" -O "$output" "$url"
+    else
+      wget -q -O "$output" "$url"
+    fi
     return
   fi
 
-  echo "curl or wget is required to install Codex." >&2
+  echo "curl or wget is required to install Open Interpreter." >&2
   exit 1
 }
 
 download_text() {
   url="$1"
+  token="$(github_token || true)"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url"
+    if [ -n "$token" ]; then
+      curl -fsSL -H "Authorization: Bearer $token" -H "X-GitHub-Api-Version: 2022-11-28" "$url"
+    else
+      curl -fsSL "$url"
+    fi
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget -q -O - "$url"
+    if [ -n "$token" ]; then
+      wget -q --header="Authorization: Bearer $token" --header="X-GitHub-Api-Version: 2022-11-28" -O - "$url"
+    else
+      wget -q -O - "$url"
+    fi
     return
   fi
 
-  echo "curl or wget is required to install Codex." >&2
+  echo "curl or wget is required to install Open Interpreter." >&2
   exit 1
 }
 
@@ -111,13 +147,17 @@ release_url_for_asset() {
   asset="$1"
   resolved_version="$2"
 
-  printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
+  printf 'https://github.com/%s/releases/download/v%s/%s\n' "$GITHUB_REPO" "$resolved_version" "$asset"
 }
 
 release_metadata_url() {
   resolved_version="$1"
 
-  printf 'https://api.github.com/repos/openai/codex/releases/tags/rust-v%s\n' "$resolved_version"
+  printf 'https://api.github.com/repos/%s/releases/tags/v%s\n' "$GITHUB_REPO" "$resolved_version"
+}
+
+latest_release_metadata_url() {
+  printf 'https://api.github.com/repos/%s/releases/latest\n' "$GITHUB_REPO"
 }
 
 release_asset_digest() {
@@ -157,6 +197,16 @@ release_asset_digest() {
   case "$digest" in
     sha256:????????????????????????????????????????????????????????????????)
       printf '%s\n' "${digest#sha256:}"
+      return
+      ;;
+  esac
+
+  checksum_url="$(release_url_for_asset "$asset.sha256" "$resolved_version")"
+  checksum_text="$(download_text "$checksum_url")"
+  checksum="$(printf '%s\n' "$checksum_text" | awk '{print $1}' | head -n 1)"
+  case "$checksum" in
+    ????????????????????????????????????????????????????????????????)
+      printf '%s\n' "$checksum"
       ;;
     *)
       echo "Could not find SHA-256 digest for release asset $asset." >&2
@@ -183,7 +233,7 @@ file_sha256() {
     return
   fi
 
-  echo "sha256sum, shasum, or openssl is required to verify the Codex download." >&2
+  echo "sha256sum, shasum, or openssl is required to verify the Open Interpreter download." >&2
   exit 1
 }
 
@@ -193,7 +243,7 @@ verify_archive_digest() {
   actual_digest="$(file_sha256 "$archive_path")"
 
   if [ "$actual_digest" != "$expected_digest" ]; then
-    echo "Downloaded Codex archive checksum did not match release metadata." >&2
+    echo "Downloaded Open Interpreter archive checksum did not match release metadata." >&2
     echo "expected: $expected_digest" >&2
     echo "actual:   $actual_digest" >&2
     exit 1
@@ -202,7 +252,7 @@ verify_archive_digest() {
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    echo "$1 is required to install Codex." >&2
+    echo "$1 is required to install Open Interpreter." >&2
     exit 1
   fi
 }
@@ -215,11 +265,11 @@ resolve_version() {
     return
   fi
 
-  release_json="$(download_text "https://api.github.com/repos/openai/codex/releases/latest")"
-  resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"rust-v\([^"]*\)".*/\1/p' | head -n 1)"
+  release_json="$(download_text "$(latest_release_metadata_url)")"
+  resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"v\([^"]*\)".*/\1/p' | head -n 1)"
 
   if [ -z "$resolved" ]; then
-    echo "Failed to resolve the latest Codex release version." >&2
+    echo "Failed to resolve the latest Open Interpreter release version." >&2
     exit 1
   fi
 
@@ -227,8 +277,6 @@ resolve_version() {
 }
 
 pick_profile() {
-  # Use the same shell-specific split Homebrew documents because there is no
-  # universal startup file across macOS/Linux login and interactive shells.
   case "$os:${SHELL:-}" in
     darwin:*/zsh)
       printf '%s\n' "$HOME/.zprofile"
@@ -260,8 +308,8 @@ add_to_path() {
 
   profile="$(pick_profile)"
   path_profile="$profile"
-  begin_marker="# >>> Codex installer >>>"
-  end_marker="# <<< Codex installer <<<"
+  begin_marker="# >>> Open Interpreter installer >>>"
+  end_marker="# <<< Open Interpreter installer <<<"
   path_line="export PATH=\"$BIN_DIR:\$PATH\""
 
   if [ -f "$profile" ] && grep -F "$begin_marker" "$profile" >/dev/null 2>&1; then
@@ -406,7 +454,7 @@ cleanup_stale_install_artifacts() {
   find "$STANDALONE_ROOT" -mindepth 1 -maxdepth 1 -name '.current.*' -exec rm -f {} +
 
   if [ -d "$BIN_DIR" ]; then
-    find "$BIN_DIR" -mindepth 1 -maxdepth 1 -name '.codex.*' -exec rm -f {} +
+    find "$BIN_DIR" -mindepth 1 -maxdepth 1 -name '.interpreter.*' -exec rm -f {} +
   fi
 }
 
@@ -431,58 +479,23 @@ replace_path_with_symlink() {
 }
 
 version_from_binary() {
-  codex_path="$1"
+  interpreter_path="$1"
 
-  if [ ! -x "$codex_path" ]; then
+  if [ ! -x "$interpreter_path" ]; then
     return 1
   fi
 
-  "$codex_path" --version 2>/dev/null | sed -n 's/.* \([0-9][0-9A-Za-z.+-]*\)$/\1/p' | head -n 1
+  "$interpreter_path" --version 2>/dev/null | sed -n 's/.* \([0-9][0-9A-Za-z.+-]*\)$/\1/p' | head -n 1
 }
 
 current_installed_version() {
-  version="$(version_from_binary "$CURRENT_LINK/codex" || true)"
+  version="$(version_from_binary "$CURRENT_LINK/interpreter" || true)"
   if [ -n "$version" ]; then
     printf '%s\n' "$version"
     return 0
   fi
 
   return 0
-}
-
-resolve_existing_codex() {
-  command -v codex 2>/dev/null || true
-}
-
-classify_existing_codex() {
-  existing_path="$1"
-
-  if [ -z "$existing_path" ] || [ "$existing_path" = "$BIN_PATH" ]; then
-    return 1
-  fi
-
-  case "$existing_path" in
-    /opt/homebrew/* | /usr/local/*)
-      if [ "$os" = "darwin" ]; then
-        printf 'brew\n'
-        return 0
-      fi
-      ;;
-  esac
-
-  if [ -f "$existing_path" ] && grep -F "#!/usr/bin/env node" "$existing_path" >/dev/null 2>&1; then
-    case "$existing_path" in
-      *".bun"*)
-        printf 'bun\n'
-        ;;
-      *)
-        printf 'npm\n'
-        ;;
-    esac
-    return 0
-  fi
-
-  return 1
 }
 
 prompt_yes_no() {
@@ -515,87 +528,46 @@ prompt_yes_no() {
 print_launch_instructions() {
   case "$path_action" in
     added)
-      step "Current terminal: export PATH=\"$BIN_DIR:\$PATH\" && codex"
-      step "Future terminals: open a new terminal and run: codex"
+      step "Current terminal: export PATH=\"$BIN_DIR:\$PATH\" && interpreter"
+      step "Future terminals: open a new terminal and run: interpreter"
       step "PATH was added to $path_profile"
       ;;
     updated)
-      step "Current terminal: export PATH=\"$BIN_DIR:\$PATH\" && codex"
-      step "Future terminals: open a new terminal and run: codex"
+      step "Current terminal: export PATH=\"$BIN_DIR:\$PATH\" && interpreter"
+      step "Future terminals: open a new terminal and run: interpreter"
       step "PATH was updated in $path_profile"
       ;;
     configured)
-      step "Current terminal: export PATH=\"$BIN_DIR:\$PATH\" && codex"
-      step "Future terminals: open a new terminal and run: codex"
+      step "Current terminal: export PATH=\"$BIN_DIR:\$PATH\" && interpreter"
+      step "Future terminals: open a new terminal and run: interpreter"
       step "PATH is already configured in $path_profile"
       ;;
     *)
-      step "Current terminal: codex"
-      step "Future terminals: open a new terminal and run: codex"
+      step "Current terminal: interpreter"
+      step "Future terminals: open a new terminal and run: interpreter"
       ;;
   esac
 }
 
-maybe_launch_codex_now() {
-  if prompt_yes_no "Start Codex now?"; then
-    step "Launching Codex"
+maybe_launch_interpreter_now() {
+  if prompt_yes_no "Start Open Interpreter now?"; then
+    step "Launching Open Interpreter"
     "$BIN_PATH"
-  fi
-}
-
-detect_conflicting_install() {
-  existing_path="$(resolve_existing_codex)"
-  manager="$(classify_existing_codex "$existing_path" || true)"
-
-  if [ -z "$manager" ]; then
-    return
-  fi
-
-  conflict_manager="$manager"
-  conflict_path="$existing_path"
-  step "Detected existing $manager-managed Codex at $existing_path"
-  warn "Multiple managed Codex installs can be ambiguous because PATH order decides which one runs."
-}
-
-handle_conflicting_install() {
-  if [ -z "$conflict_manager" ]; then
-    return
-  fi
-
-  case "$conflict_manager" in
-    brew)
-      uninstall_cmd="brew uninstall --cask codex"
-      ;;
-    bun)
-      uninstall_cmd="bun remove -g @openai/codex"
-      ;;
-    *)
-      uninstall_cmd="npm uninstall -g @openai/codex"
-      ;;
-  esac
-
-  if prompt_yes_no "Uninstall the existing $conflict_manager-managed Codex now?"; then
-    step "Running: $uninstall_cmd"
-    if ! sh -c "$uninstall_cmd"; then
-      warn "Failed to uninstall the existing $conflict_manager-managed Codex. Continuing with the standalone install."
-    fi
-  else
-    warn "Leaving the existing $conflict_manager-managed Codex installed. PATH order will determine which codex runs."
   fi
 }
 
 install_release() {
   release_dir="$1"
-  vendor_root="$2"
+  extracted_root="$2"
   stage_release="$RELEASES_DIR/.staging.$(basename "$release_dir").$$"
 
   mkdir -p "$RELEASES_DIR"
   rm -rf "$stage_release"
-  mkdir -p "$stage_release/codex-resources"
-  cp "$vendor_root/codex/codex" "$stage_release/codex"
-  cp "$vendor_root/path/rg" "$stage_release/codex-resources/rg"
-  chmod 0755 "$stage_release/codex"
-  chmod 0755 "$stage_release/codex-resources/rg"
+  mkdir -p "$stage_release"
+  for binary in interpreter interpreter-root-tui interpreter-tui interpreter-app-server; do
+    cp "$extracted_root/$binary" "$stage_release/$binary"
+    chmod 0755 "$stage_release/$binary"
+  done
 
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
     rm -rf "$release_dir"
@@ -609,8 +581,10 @@ release_dir_is_complete() {
   expected_target="$3"
 
   [ -d "$release_dir" ] &&
-    [ -x "$release_dir/codex" ] &&
-    [ -x "$release_dir/codex-resources/rg" ] &&
+    [ -x "$release_dir/interpreter" ] &&
+    [ -x "$release_dir/interpreter-root-tui" ] &&
+    [ -x "$release_dir/interpreter-tui" ] &&
+    [ -x "$release_dir/interpreter-app-server" ] &&
     [ "$(basename "$release_dir")" = "$expected_version-$expected_target" ]
 }
 
@@ -623,9 +597,9 @@ update_current_link() {
 
 update_visible_command() {
   mkdir -p "$BIN_DIR"
-  tmp_link="$BIN_DIR/.codex.$$"
+  tmp_link="$BIN_DIR/.interpreter.$$"
 
-  replace_path_with_symlink "$BIN_PATH" "$CURRENT_LINK/codex" "$tmp_link"
+  replace_path_with_symlink "$BIN_PATH" "$CURRENT_LINK/interpreter" "$tmp_link"
 }
 
 verify_visible_command() {
@@ -671,44 +645,38 @@ fi
 
 if [ "$os" = "darwin" ]; then
   if [ "$arch" = "aarch64" ]; then
-    npm_tag="darwin-arm64"
-    vendor_target="aarch64-apple-darwin"
+    target="aarch64-apple-darwin"
     platform_label="macOS (Apple Silicon)"
   else
-    npm_tag="darwin-x64"
-    vendor_target="x86_64-apple-darwin"
+    target="x86_64-apple-darwin"
     platform_label="macOS (Intel)"
   fi
 else
   if [ "$arch" = "aarch64" ]; then
-    npm_tag="linux-arm64"
-    vendor_target="aarch64-unknown-linux-musl"
+    target="aarch64-unknown-linux-musl"
     platform_label="Linux (ARM64)"
   else
-    npm_tag="linux-x64"
-    vendor_target="x86_64-unknown-linux-musl"
+    target="x86_64-unknown-linux-musl"
     platform_label="Linux (x64)"
   fi
 fi
 
 resolved_version="$(resolve_version)"
-asset="codex-npm-$npm_tag-$resolved_version.tgz"
+asset="open-interpreter-$target.tar.gz"
 download_url="$(release_url_for_asset "$asset" "$resolved_version")"
-release_name="$resolved_version-$vendor_target"
+release_name="$resolved_version-$target"
 release_dir="$RELEASES_DIR/$release_name"
 current_version="$(current_installed_version)"
 
 if [ -n "$current_version" ] && [ "$current_version" != "$resolved_version" ]; then
-  step "Updating Codex CLI from $current_version to $resolved_version"
+  step "Updating Open Interpreter from $current_version to $resolved_version"
 elif [ -n "$current_version" ]; then
-  step "Updating Codex CLI"
+  step "Refreshing Open Interpreter $current_version"
 else
-  step "Installing Codex CLI"
+  step "Installing Open Interpreter"
 fi
 step "Detected platform: $platform_label"
 step "Resolved version: $resolved_version"
-
-detect_conflicting_install
 
 tmp_dir="$(mktemp -d)"
 cleanup() {
@@ -722,7 +690,7 @@ trap cleanup EXIT INT TERM
 acquire_install_lock
 cleanup_stale_install_artifacts
 
-if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"; then
+if ! release_dir_is_complete "$release_dir" "$resolved_version" "$target"; then
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
     warn "Found incomplete existing release at $release_dir; reinstalling."
   fi
@@ -730,7 +698,7 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   archive_path="$tmp_dir/$asset"
   extract_dir="$tmp_dir/extract"
 
-  step "Downloading Codex CLI"
+  step "Downloading Open Interpreter"
   expected_digest="$(release_asset_digest "$asset" "$resolved_version")"
   download_file "$download_url" "$archive_path"
   verify_archive_digest "$archive_path" "$expected_digest"
@@ -739,23 +707,17 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   tar -xzf "$archive_path" -C "$extract_dir"
 
   step "Installing standalone package to $release_dir"
-  install_release "$release_dir" "$extract_dir/package/vendor/$vendor_target"
+  install_release "$release_dir" "$extract_dir/open-interpreter"
 fi
+
 update_current_link "$release_dir"
 update_visible_command
 add_to_path
 verify_visible_command
 release_install_lock
-handle_conflicting_install
 
 case "$path_action" in
-  added)
-    print_launch_instructions
-    ;;
-  updated)
-    print_launch_instructions
-    ;;
-  configured)
+  added | updated | configured)
     print_launch_instructions
     ;;
   *)
@@ -764,5 +726,5 @@ case "$path_action" in
     ;;
 esac
 
-printf 'Codex CLI %s installed successfully.\n' "$resolved_version"
-maybe_launch_codex_now
+printf 'Open Interpreter %s installed successfully.\n' "$resolved_version"
+maybe_launch_interpreter_now

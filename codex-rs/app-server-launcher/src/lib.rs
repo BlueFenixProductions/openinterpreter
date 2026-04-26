@@ -32,9 +32,9 @@ const MAX_PROCESS_START_TIME_SKEW: Duration = Duration::from_secs(30);
 const SHUTDOWN_IDLE_TIMEOUT_SECONDS: u64 = 5;
 const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const APP_SERVER_BINARY: &str = if cfg!(windows) {
-    "codex-app-server.exe"
+    "interpreter-app-server.exe"
 } else {
-    "codex-app-server"
+    "interpreter-app-server"
 };
 
 fn record_startup_trace_event(event: &str) {
@@ -300,7 +300,7 @@ fn daemon_paths_for_home(codex_home: &Path) -> DaemonPaths {
     DaemonPaths {
         lockfile_path: runtime_dir.join("app-server.json"),
         spawn_lock_path: runtime_dir.join("spawn.lock"),
-        log_path: log_dir.join("codex-app-server.log"),
+        log_path: log_dir.join("interpreter-app-server.log"),
     }
 }
 
@@ -759,7 +759,7 @@ mod tests {
   "port": 4567,
   "websocketUrl": "ws://127.0.0.1:4567",
   "startedAtUnix": 1000,
-  "serverBin": "codex-app-server"
+  "serverBin": "interpreter-app-server"
 }"#,
         )
         .expect("write stale lockfile");
@@ -931,7 +931,7 @@ mod tests {
 
         assert_eq!(status.websocket_url, websocket_url);
         assert_eq!(status.health, DaemonHealth::Ready);
-        assert!(status.log_path.ends_with("codex-app-server.log"));
+        assert!(status.log_path.ends_with("interpreter-app-server.log"));
 
         terminate_process(status.pid, /*force*/ true);
         assert!(wait_for_process_exit(status.pid, Duration::from_secs(10)).await);
