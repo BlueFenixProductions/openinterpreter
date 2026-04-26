@@ -81,6 +81,62 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
 
+      - name: Configure rustc UBSan wrapper
+        if: contains(matrix.target, 'unknown-linux-musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          ubsan=""
+          if command -v ldconfig >/dev/null 2>&1; then
+            ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/')"
+          fi
+
+          wrapper="${RUNNER_TEMP:-/tmp}/rustc-ubsan-wrapper"
+          {
+            printf '%s\n' '#!/usr/bin/env bash'
+            printf '%s\n' 'set -euo pipefail'
+            printf '%s\n' 'if [[ -n "${RUSTC_UBSAN_PRELOAD:-}" ]]; then'
+            printf '%s\n' '  export LD_PRELOAD="${RUSTC_UBSAN_PRELOAD}${LD_PRELOAD:+:${LD_PRELOAD}}"'
+            printf '%s\n' 'fi'
+            printf '%s\n' 'exec "$1" "${@:2}"'
+          } > "${wrapper}"
+          chmod +x "${wrapper}"
+
+          echo "RUSTC_UBSAN_PRELOAD=${ubsan}" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
+
+      - name: Clear sanitizer flags
+        if: contains(matrix.target, 'unknown-linux-musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${{ matrix.target }}"
+          target_no_jitter="${target_no_jitter//-/_}"
+          echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
+
+          echo "RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_ENCODED_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "RUSTDOCFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_BUILD_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
+
+          sanitize_flags() {
+            local input="$1"
+            input="${input//-fsanitize=undefined/}"
+            input="${input//-fno-sanitize-recover=undefined/}"
+            input="${input//-fno-sanitize-trap=undefined/}"
+            echo "$input"
+          }
+
+          echo "CFLAGS=$(sanitize_flags "${CFLAGS-}")" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=$(sanitize_flags "${CXXFLAGS-}")" >> "$GITHUB_ENV"
+
       - name: Configure musl rusty_v8 artifacts
         if: contains(matrix.target, 'unknown-linux-musl')
         uses: ./.github/actions/setup-rusty-v8-musl
