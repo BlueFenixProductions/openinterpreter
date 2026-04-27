@@ -10,6 +10,15 @@ on:
         description: "Release version without leading v"
         required: true
         default: "0.0.0"
+      targets:
+        description: "Release targets to build: all or comma-separated target triples"
+        required: true
+        default: "all"
+      publish:
+        description: "Publish release after building. Only valid with targets=all."
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -19,8 +28,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Prepare release matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      publish: ${{ steps.matrix.outputs.publish }}
+    steps:
+      - name: Select targets
+        id: matrix
+        shell: bash
+        env:
+          TARGETS: ${{ github.event_name == 'workflow_dispatch' && inputs.targets || 'all' }}
+          PUBLISH: ${{ github.event_name == 'push' && 'true' || inputs.publish }}
+        run: |
+          set -euo pipefail
+          ruby <<'RUBY' >> "$GITHUB_OUTPUT"
+          require "json"
+
+          all = [
+            {"runner"=>"macos-15", "target"=>"aarch64-apple-darwin", "archive"=>"open-interpreter-aarch64-apple-darwin.tar.gz"},
+            {"runner"=>"macos-15-intel", "target"=>"x86_64-apple-darwin", "archive"=>"open-interpreter-x86_64-apple-darwin.tar.gz"},
+            {"runner"=>"ubuntu-24.04", "target"=>"x86_64-unknown-linux-gnu", "archive"=>"open-interpreter-x86_64-unknown-linux-gnu.tar.gz"},
+            {"runner"=>"ubuntu-24.04-arm", "target"=>"aarch64-unknown-linux-gnu", "archive"=>"open-interpreter-aarch64-unknown-linux-gnu.tar.gz"},
+            {"runner"=>"windows-2025", "target"=>"x86_64-pc-windows-msvc", "archive"=>"open-interpreter-x86_64-pc-windows-msvc.tar.gz"},
+            {"runner"=>"windows-11-arm", "target"=>"aarch64-pc-windows-msvc", "archive"=>"open-interpreter-aarch64-pc-windows-msvc.tar.gz"},
+          ]
+
+          targets = ENV.fetch("TARGETS").split(",").map(&:strip).reject(&:empty?)
+          selected = if targets == ["all"]
+            all
+          else
+            known = all.to_h { |entry| [entry.fetch("target"), entry] }
+            unknown = targets - known.keys
+            abort "unknown release target(s): #{unknown.join(", ")}" unless unknown.empty?
+            targets.map { |target| known.fetch(target) }
+          end
+
+          publish = ENV.fetch("PUBLISH") == "true"
+          abort "publish=true requires targets=all" if publish && selected.length != all.length
+
+          puts "matrix=#{JSON.generate({"include"=>selected})}"
+          puts "publish=#{publish}"
+          RUBY
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     defaults:
@@ -30,26 +84,7 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: thin
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            archive: open-interpreter-aarch64-apple-darwin.tar.gz
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: open-interpreter-x86_64-apple-darwin.tar.gz
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            archive: open-interpreter-x86_64-unknown-linux-gnu.tar.gz
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            archive: open-interpreter-aarch64-unknown-linux-gnu.tar.gz
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            archive: open-interpreter-x86_64-pc-windows-msvc.tar.gz
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            archive: open-interpreter-aarch64-pc-windows-msvc.tar.gz
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -195,7 +230,7 @@ jobs:
           } > "${package_dir}/README.txt"
 
           mkdir -p "${dist_dir}"
-          tar -C "${RUNNER_TEMP}" -czf "${dist_dir}/${{ matrix.archive }}" open-interpreter
+          tar -C "${temp_dir}" -czf "${dist_dir}/${{ matrix.archive }}" open-interpreter
           if command -v shasum >/dev/null 2>&1; then
             shasum -a 256 "${dist_dir}/${{ matrix.archive }}" > "${dist_dir}/${{ matrix.archive }}.sha256"
           else
@@ -209,7 +244,10 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: build
+    needs:
+      - prepare
+      - build
+    if: ${{ needs.prepare.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
