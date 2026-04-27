@@ -77,6 +77,9 @@ pub(crate) struct FooterProps {
     pub(crate) quit_shortcut_key: KeyBinding,
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) context_window_used_tokens: Option<i64>,
+    /// Temporary right-side contextual message, rendered where the context
+    /// window indicator normally appears.
+    pub(crate) contextual_notice: Option<Line<'static>>,
     pub(crate) status_line_value: Option<Line<'static>>,
     pub(crate) status_line_enabled: bool,
     /// Active thread label shown when the footer is rendering contextual information instead of an
@@ -1232,7 +1235,9 @@ mod tests {
                         show_queue_hint,
                     )
                 };
-                let right_line = if status_line_active {
+                let right_line = if let Some(notice) = props.contextual_notice.clone() {
+                    Some(notice.dim())
+                } else if status_line_active {
                     let full = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint);
                     let compact = mode_indicator_line(
                         collaboration_mode_indicator,
@@ -1373,6 +1378,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1391,6 +1397,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1409,6 +1416,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1427,6 +1435,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1445,6 +1454,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1463,6 +1473,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1481,6 +1492,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1499,6 +1511,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: Some(72),
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1517,6 +1530,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1535,6 +1549,7 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                contextual_notice: None,
                 status_line_value: None,
                 status_line_enabled: false,
                 active_agent_label: None,
@@ -1551,6 +1566,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
@@ -1580,6 +1596,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
@@ -1602,6 +1619,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: None,
@@ -1619,6 +1637,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: None,
@@ -1636,6 +1655,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: None,
@@ -1653,6 +1673,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: None, // command timed out / empty
             status_line_enabled: true,
             active_agent_label: None,
@@ -1675,6 +1696,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
@@ -1697,6 +1719,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: None,
             status_line_enabled: true,
             active_agent_label: None,
@@ -1720,6 +1743,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: Some(Line::from(
                 "Status line content that should truncate before the mode indicator".to_string(),
             )),
@@ -1744,6 +1768,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: Some("Robie [explorer]".to_string()),
@@ -1761,6 +1786,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             active_agent_label: Some("Robie [explorer]".to_string()),
@@ -1781,6 +1807,7 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: Some(50),
             context_window_used_tokens: None,
+            contextual_notice: None,
             status_line_value: Some(Line::from(
                 "Status line content that is definitely too long to fit alongside the mode label"
                     .to_string(),
@@ -1807,6 +1834,31 @@ mod tests {
             screen.contains('…'),
             "status line should be truncated with ellipsis to keep mode indicator"
         );
+    }
+
+    #[test]
+    fn footer_contextual_notice_replaces_context_indicator() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: Some(64),
+            context_window_used_tokens: None,
+            contextual_notice: Some(Line::from("Updated to Open Interpreter 1.0")),
+            status_line_value: None,
+            status_line_enabled: false,
+            active_agent_label: None,
+        };
+
+        let screen = render_footer_with_mode_indicator(
+            /*width*/ 100, &props, /*collaboration_mode_indicator*/ None,
+        );
+        assert!(screen.contains("Updated to Open Interpreter 1.0"));
+        assert!(!screen.contains("64% context left"));
     }
 
     #[test]

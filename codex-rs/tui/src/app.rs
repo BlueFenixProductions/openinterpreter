@@ -884,7 +884,7 @@ impl App {
         }
         #[cfg(all(not(debug_assertions), feature = "startup-network"))]
         if let Some(message) = crate::updates::take_installed_update_notice(&config) {
-            chat_widget.add_info_message(message, /*hint*/ None);
+            chat_widget.show_footer_context_notice(message, Duration::from_secs(5));
         }
 
         chat_widget

@@ -360,6 +360,7 @@ pub(crate) struct ChatComposer {
     /// prepare their argument text without also double-recording the full command invocation.
     pending_slash_command_history: Option<HistoryEntry>,
     footer_flash: Option<FooterFlash>,
+    contextual_notice: Option<ContextualNotice>,
     context_window_percent: Option<i64>,
     // Monotonically increasing identifier for textarea elements we insert.
     #[cfg(not(target_os = "linux"))]
@@ -395,6 +396,12 @@ pub(crate) struct ChatComposer {
 
 #[derive(Clone, Debug)]
 struct FooterFlash {
+    line: Line<'static>,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Debug)]
+struct ContextualNotice {
     line: Line<'static>,
     expires_at: Instant,
 }
@@ -518,6 +525,7 @@ impl ChatComposer {
             selected_remote_image_index: None,
             pending_slash_command_history: None,
             footer_flash: None,
+            contextual_notice: None,
             context_window_percent: None,
             #[cfg(not(target_os = "linux"))]
             next_element_id: 0,
@@ -1017,6 +1025,20 @@ impl ChatComposer {
         self.footer_flash
             .as_ref()
             .is_some_and(|flash| Instant::now() < flash.expires_at)
+    }
+
+    pub(crate) fn show_contextual_notice(&mut self, line: Line<'static>, duration: Duration) {
+        let expires_at = Instant::now()
+            .checked_add(duration)
+            .unwrap_or_else(Instant::now);
+        self.contextual_notice = Some(ContextualNotice { line, expires_at });
+    }
+
+    fn contextual_notice_line(&self) -> Option<Line<'static>> {
+        self.contextual_notice
+            .as_ref()
+            .filter(|notice| Instant::now() < notice.expires_at)
+            .map(|notice| notice.line.clone())
     }
 
     /// Replace the entire composer content with `text` and reset cursor.
@@ -3236,6 +3258,7 @@ impl ChatComposer {
             is_wsl,
             context_window_percent: self.context_window_percent,
             context_window_used_tokens: self.context_window_used_tokens,
+            contextual_notice: self.contextual_notice_line(),
             status_line_value: self.status_line_value.clone(),
             status_line_enabled: self.status_line_enabled,
             active_agent_label: self.active_agent_label.clone(),
@@ -4008,34 +4031,35 @@ impl ChatComposer {
                             show_queue_hint,
                         )
                     };
-                    let right_line =
-                        if let Some(label) = self.side_conversation_context_label.as_ref() {
-                            Some(side_conversation_context_line(label))
-                        } else if let Some(line) = self.shell_mode_footer_line() {
-                            Some(line)
-                        } else if status_line_active {
-                            let full = status_line_right_indicator(
-                                self.collaboration_mode_indicator,
-                                self.goal_status_indicator.as_ref(),
-                                show_cycle_hint,
-                            );
-                            let compact = status_line_right_indicator(
-                                self.collaboration_mode_indicator,
-                                self.goal_status_indicator.as_ref(),
-                                /*show_cycle_hint*/ false,
-                            );
-                            let full_width = full.as_ref().map(|l| l.width() as u16).unwrap_or(0);
-                            if can_show_left_with_context(hint_rect, left_width, full_width) {
-                                full
-                            } else {
-                                compact
-                            }
+                    let right_line = if let Some(notice) = footer_props.contextual_notice.clone() {
+                        Some(notice.dim())
+                    } else if let Some(label) = self.side_conversation_context_label.as_ref() {
+                        Some(side_conversation_context_line(label))
+                    } else if let Some(line) = self.shell_mode_footer_line() {
+                        Some(line)
+                    } else if status_line_active {
+                        let full = status_line_right_indicator(
+                            self.collaboration_mode_indicator,
+                            self.goal_status_indicator.as_ref(),
+                            show_cycle_hint,
+                        );
+                        let compact = status_line_right_indicator(
+                            self.collaboration_mode_indicator,
+                            self.goal_status_indicator.as_ref(),
+                            /*show_cycle_hint*/ false,
+                        );
+                        let full_width = full.as_ref().map(|l| l.width() as u16).unwrap_or(0);
+                        if can_show_left_with_context(hint_rect, left_width, full_width) {
+                            full
                         } else {
-                            Some(context_window_line(
-                                footer_props.context_window_percent,
-                                footer_props.context_window_used_tokens,
-                            ))
-                        };
+                            compact
+                        }
+                    } else {
+                        Some(context_window_line(
+                            footer_props.context_window_percent,
+                            footer_props.context_window_used_tokens,
+                        ))
+                    };
                     let right_width = right_line.as_ref().map(|l| l.width() as u16).unwrap_or(0);
                     if status_line_active
                         && let Some(max_left) = max_left_width_for_right(hint_rect, right_width)

@@ -1292,6 +1292,12 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn show_contextual_notice(&mut self, line: Line<'static>, duration: Duration) {
+        self.composer.show_contextual_notice(line, duration);
+        self.request_redraw();
+        self.request_redraw_in(duration);
+    }
+
     /// Updates the contextual footer label and requests a redraw only when it changed.
     ///
     /// This keeps the footer plumbing cheap during thread transitions where `App` may recompute
