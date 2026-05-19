@@ -2556,15 +2556,15 @@ async fn make_turn_context_uses_context_window_truncation_for_kimi_harness() {
 
 #[tokio::test]
 async fn turn_context_with_model_preserves_configured_harness_in_tools_config() {
-    let (session, mut turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+    let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         |config| {
             config.harness = Some("claude-code".to_string());
+            config.model_reasoning_effort = Some(ReasoningEffortConfig::Minimal);
         },
     )
     .await;
-    turn_context.reasoning_effort = Some(ReasoningEffortConfig::Minimal);
 
     let updated = turn_context
         .with_model("gpt-5.1".to_string(), &session.services.models_manager)

@@ -44,8 +44,7 @@ Examples of the kind of risky actions that warrant user confirmation:
 When you encounter an obstacle, do not use destructive actions as a shortcut to simply make it go away. For instance, try to identify root causes and fix underlying issues rather than bypassing safety checks (e.g. --no-verify). If you discover unexpected state like unfamiliar files, branches, or configuration, investigate before deleting or overwriting, as it may represent the user's in-progress work. For example, typically resolve merge conflicts rather than discarding changes; similarly, if a lock file exists, investigate what process holds it rather than deleting it. In short: only take risky actions carefully, and when in doubt, ask before acting. Follow both the spirit and letter of these instructions - measure twice, cut once.
 
 # Using your tools
- - Prefer dedicated tools over Bash when one fits (Read, Edit, Write, Glob, Grep) — reserve Bash for shell-only operations.
- - Use TodoWrite to plan and track work. Mark each task completed as soon as it's done; don't batch.
+ - Prefer dedicated tools over {shell_command_tool_name} when one fits (Read, Edit, Write, Glob, Grep) — reserve {shell_command_tool_name} for shell-only operations.
  - You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.
 
 # Tone and style
@@ -65,12 +64,7 @@ End-of-turn summary: one or two sentences. What changed and what's next. Nothing
 
 Match responses to the task: a simple question gets a direct answer, not headers and sections.
 
-In code: default to writing no comments. Never write multi-paragraph docstrings or multi-line comment blocks — one short line max. Don't create planning, decision, or analysis documents unless the user asks for them — work from conversation context, not intermediate files.
-
-# Session-specific guidance
- - Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.
- - For broad codebase exploration or research that'll take more than 3 queries, spawn Agent with subagent_type=Explore. Otherwise use the Glob or Grep directly.
- - When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess."#;
+In code: default to writing no comments. Never write multi-paragraph docstrings or multi-line comment blocks — one short line max. Don't create planning, decision, or analysis documents unless the user asks for them — work from conversation context, not intermediate files."#;
 
 const CLAUDE_CODE_AUTO_MEMORY_SUFFIX: &str = r#"`. This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).
 
@@ -160,13 +154,16 @@ Saving a memory is a two-step process:
 
 ```markdown
 ---
-name: {{memory name}}
-description: {{one-line description — used to decide relevance in future conversations, so be specific}}
-type: {{user, feedback, project, reference}}
+name: {{short-kebab-case-slug}}
+description: {{one-line summary — used to decide relevance in future conversations, so be specific}}
+metadata:
+  type: {{user, feedback, project, reference}}
 ---
 
-{{memory content — for feedback/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines}}
+{{memory content — for feedback/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines. Link related memories with [[their-name]].}}
 ```
+
+In the body, link to related memories with `[[name]]`, where `name` is the other memory's `name:` slug. Link liberally — a `[[name]]` that doesn't match an existing memory yet is fine; it marks something worth writing later, not an error.
 
 **Step 2** — add a pointer to that file in `MEMORY.md`. `MEMORY.md` is an index, not a memory — each entry should be one line, under ~150 characters: `- [Title](file.md) — one-line hook`. It has no frontmatter. Never write memory content directly into `MEMORY.md`.
 
@@ -200,13 +197,32 @@ Memory is one of several persistence mechanisms available to you as you assist t
 - When to use or update tasks instead of memory: When you need to break your work in current conversation into discrete steps or keep track of your progress use tasks instead of saving to memory. Tasks are great for persisting information about the work that needs to be done in the current conversation, but memory should be reserved for information that will be useful in future conversations.
 "#;
 
-pub(super) fn build_system_prompt(prompt: &Prompt, model_slug: &str) -> String {
+pub(super) enum ClaudeCodeShellToolName {
+    Bash,
+    PowerShell,
+}
+
+impl ClaudeCodeShellToolName {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ClaudeCodeShellToolName::Bash => "Bash",
+            ClaudeCodeShellToolName::PowerShell => "PowerShell",
+        }
+    }
+}
+
+pub(super) fn build_system_prompt(
+    prompt: &Prompt,
+    model_slug: &str,
+    shell_tool_name: ClaudeCodeShellToolName,
+) -> String {
     let cwd = prompt
         .cwd
         .as_deref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| ".".to_string());
-    let mut body = CLAUDE_CODE_SYSTEM_PROMPT_PREFIX.to_string();
+    let mut body = CLAUDE_CODE_SYSTEM_PROMPT_PREFIX
+        .replace("{shell_command_tool_name}", shell_tool_name.as_str());
 
     if let Some(memory_dir) = claude_code_memory_dir(prompt) {
         body.push_str("\n\n# auto memory\n\nYou have a persistent, file-based memory system at `");
@@ -231,8 +247,12 @@ pub(super) fn build_system_prompt(prompt: &Prompt, model_slug: &str) -> String {
     body.push_str("\n - You are powered by the model named ");
     body.push_str(claude_code_model_display_name(model_slug).as_str());
     body.push_str(". The exact model ID is ");
-    body.push_str(canonical_claude_model_slug(model_slug));
-    body.push_str(".\n - Assistant knowledge cutoff is August 2025.\n - The most recent Claude model family is Claude 4.X. Model IDs — Opus 4.7: 'claude-opus-4-7', Sonnet 4.6: 'claude-sonnet-4-6', Haiku 4.5: 'claude-haiku-4-5-20251001'. When building AI applications, default to the latest and most capable Claude models.\n - Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).\n - Fast mode for Claude Code uses Claude Opus 4.6 with faster output (it does not downgrade to a smaller model). It can be toggled with /fast and is only available on Opus 4.6.\n\n# Context management\nWhen working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.");
+    body.push_str(claude_code_environment_model_id(model_slug).as_str());
+    body.push_str(".\n - Assistant knowledge cutoff is January 2026.\n - The most recent Claude model family is Claude 4.X. Model IDs — Opus 4.7: 'claude-opus-4-7', Sonnet 4.6: 'claude-sonnet-4-6', Haiku 4.5: 'claude-haiku-4-5-20251001'. When building AI applications, default to the latest and most capable Claude models.\n - Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).\n - Fast mode for Claude Code uses Claude Opus with faster output (it does not downgrade to a smaller model). It can be toggled with /fast and is available on Opus 4.6 and Opus 4.7.\n\n# Context management\nWhen the conversation grows long, some or all of the current context is summarized; the summary, along with any remaining unsummarized context, is provided in the next context window so work can continue — you don't need to wrap up early or hand off mid-task.");
+    if let Some(git_status) = prompt.cwd.as_deref().and_then(claude_code_git_status) {
+        body.push_str("\n\n");
+        body.push_str(git_status.as_str());
+    }
 
     body
 }
@@ -291,9 +311,18 @@ pub(super) fn build_child_agent_system_prompt(prompt: &Prompt, model_slug: &str)
 
 fn claude_code_memory_dir(prompt: &Prompt) -> Option<String> {
     let cwd = prompt.cwd.as_deref()?;
-    let home = std::env::var("HOME").ok()?;
-    let key = cwd.display().to_string().replace('/', "-");
-    Some(format!("{home}/.claude/projects/{key}/memory/"))
+    let base = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|home| format!("{home}/.claude"))
+        })?;
+    let project_root = git_repository_root(cwd).unwrap_or(cwd);
+    let key = project_root.display().to_string().replace('/', "-");
+    Some(format!("{base}/projects/{key}/memory/"))
 }
 
 fn claude_code_platform_name() -> &'static str {
@@ -326,34 +355,71 @@ fn claude_code_os_version() -> String {
 }
 
 fn is_git_repository(path: &Path) -> bool {
-    path.ancestors().any(|ancestor| {
+    git_repository_root(path).is_some()
+}
+
+fn git_repository_root(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|ancestor| {
         let git_marker = ancestor.join(".git");
         git_marker.is_dir() || git_marker.is_file()
     })
 }
 
+fn claude_code_git_status(cwd: &Path) -> Option<String> {
+    if !is_git_repository(cwd) {
+        return None;
+    }
+    let branch = run_git(cwd, ["branch", "--show-current"])
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or_else(|| "main".to_string());
+    let main_branch = run_git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .and_then(|branch| branch.strip_prefix("origin/").map(ToString::to_string))
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or_else(|| "main".to_string());
+    let status = run_git(cwd, ["status", "--short"]).unwrap_or_default();
+    let recent_commits = run_git(cwd, ["log", "--oneline", "-5"]).unwrap_or_default();
+    Some(format!(
+        "gitStatus: This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.\n\nCurrent branch: {branch}\n\nMain branch (you will usually use this for PRs): {main_branch}\n\nStatus:\n{status}\n\nRecent commits:\n{recent_commits}"
+    ))
+}
+
+fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> Option<String> {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn claude_code_model_display_name(model_slug: &str) -> String {
-    let slug = canonical_claude_model_slug(model_slug);
-    let Some(slug) = slug.strip_prefix("claude-") else {
-        return slug.to_string();
+    let canonical_slug = canonical_claude_model_slug(model_slug);
+    let Some(slug) = canonical_slug.strip_prefix("claude-") else {
+        return canonical_slug.to_string();
     };
     let mut parts = slug.split('-');
     let Some(family) = parts.next() else {
-        return canonical_claude_model_slug(model_slug).to_string();
+        return canonical_slug.to_string();
     };
     let Some(major) = parts.next() else {
-        return canonical_claude_model_slug(model_slug).to_string();
+        return canonical_slug.to_string();
     };
     let Some(minor) = parts.next() else {
-        return canonical_claude_model_slug(model_slug).to_string();
+        return canonical_slug.to_string();
     };
     let family = match family {
         "opus" => "Opus",
         "sonnet" => "Sonnet",
         "haiku" => "Haiku",
-        _ => return canonical_claude_model_slug(model_slug).to_string(),
+        _ => return canonical_slug.to_string(),
     };
-    format!("{family} {major}.{minor}")
+    let display = format!("{family} {major}.{minor}");
+    if canonical_slug == "claude-opus-4-7" {
+        format!("{display} (1M context)")
+    } else {
+        display
+    }
 }
 
 fn canonical_claude_model_slug(model_slug: &str) -> &str {
@@ -364,4 +430,13 @@ fn canonical_claude_model_slug(model_slug: &str) -> &str {
         .rsplit('/')
         .next()
         .unwrap_or(model_slug)
+}
+
+fn claude_code_environment_model_id(model_slug: &str) -> String {
+    let slug = canonical_claude_model_slug(model_slug);
+    if slug == "claude-opus-4-7" {
+        format!("{slug}[1m]")
+    } else {
+        slug.to_string()
+    }
 }

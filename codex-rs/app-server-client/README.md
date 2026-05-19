@@ -2,8 +2,8 @@
 
 Shared in-process app-server client used by conversational CLI surfaces:
 
-- `codex-exec`
-- `codex-tui`
+- `interpreter-exec`
+- `interpreter-tui`
 
 ## Purpose
 

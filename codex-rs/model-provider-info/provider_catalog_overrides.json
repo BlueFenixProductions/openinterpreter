@@ -16,8 +16,28 @@
     "groq": "https://api.groq.com/openai/v1",
     "anthropic": "https://api.anthropic.com"
   },
+  "live_model_sources": {
+    "moonshotai": {
+      "url": "https://api.moonshot.ai/v1/models",
+      "auth": "bearer",
+      "auth_env": ["MOONSHOT_API_KEY", "KIMI_API_KEY"]
+    }
+  },
+  "provider_model_metadata_overrides": {
+    "moonshotai": {
+      "kimi-k2.6": {
+        "display_name": "Kimi K2.6",
+        "description": "Tool calling; Image input",
+        "reasoning": false,
+        "input_modalities": ["text", "image"],
+        "context_window": 262144
+      }
+    }
+  },
   "wire_api_overrides": {
-    "anthropic": "messages"
+    "anthropic": "messages",
+    "kimi-for-coding": "chat",
+    "moonshotai": "chat"
   },
   "sort_priorities": {
     "anthropic": 2,

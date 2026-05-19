@@ -51,6 +51,7 @@ pub struct ShellRequest {
     pub hook_command: String,
     pub cwd: AbsolutePathBuf,
     pub timeout_ms: Option<u64>,
+    pub capture_policy: ExecCapturePolicy,
     pub env: HashMap<String, String>,
     pub explicit_env_overrides: HashMap<String, String>,
     pub network: Option<NetworkProxy>,
@@ -277,7 +278,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             build_sandbox_command(&command, &req.cwd, &env, req.additional_permissions.clone())?;
         let options = ExecOptions {
             expiration: req.timeout_ms.into(),
-            capture_policy: ExecCapturePolicy::ShellTool,
+            capture_policy: req.capture_policy,
         };
         let env = attempt
             .env_for(command, options, managed_network)

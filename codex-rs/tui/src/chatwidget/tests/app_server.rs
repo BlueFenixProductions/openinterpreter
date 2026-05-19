@@ -450,7 +450,7 @@ async fn live_app_server_dynamic_tool_call_request_and_item_started_do_not_dupli
                 id: params.call_id.clone(),
                 namespace: params.namespace.clone(),
                 tool: params.tool.clone(),
-                arguments: params.arguments.clone(),
+                arguments: params.arguments,
                 status: AppServerDynamicToolCallStatus::InProgress,
                 content_items: None,
                 success: None,

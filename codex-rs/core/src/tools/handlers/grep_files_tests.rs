@@ -22,6 +22,26 @@ fn parse_truncates_after_limit() {
     );
 }
 
+#[test]
+fn grep_content_without_head_limit_uses_reference_default_limit() {
+    assert_eq!(
+        grep_output_limit(&ClaudeGrepOutputMode::Content, None),
+        CLAUDE_GREP_DEFAULT_HEAD_LIMIT
+    );
+}
+
+#[test]
+fn grep_non_content_without_head_limit_uses_reference_default_limit() {
+    assert_eq!(
+        grep_output_limit(&ClaudeGrepOutputMode::FilesWithMatches, None),
+        CLAUDE_GREP_DEFAULT_HEAD_LIMIT
+    );
+    assert_eq!(
+        grep_output_limit(&ClaudeGrepOutputMode::Count, None),
+        CLAUDE_GREP_DEFAULT_HEAD_LIMIT
+    );
+}
+
 #[tokio::test]
 async fn run_search_returns_results() -> anyhow::Result<()> {
     if !rg_available() {

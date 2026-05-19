@@ -270,14 +270,14 @@ Git Safety Protocol:
 3. Run the following commands in parallel:
    - Add relevant untracked files to the staging area.
    - Create the commit with a message ending with:
-   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+   Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
    - Run git status after the commit completes to verify success.
    Note: git status depends on the commit completing, so run it sequentially after the commit.
 4. If the commit fails due to pre-commit hook: fix the issue and create a NEW commit
 
 Important notes:
 - NEVER run additional commands to read or explore code, besides git bash commands
-- NEVER use the TodoWrite or Agent tools
+- NEVER use the TaskCreate or Agent tools
 - DO NOT push to the remote repository unless the user explicitly asks you to do so
 - IMPORTANT: Never use git commands with the -i flag (like git rebase -i or git add -i) since they require interactive input which is not supported.
 - IMPORTANT: Do not use --no-edit with git rebase commands, as the --no-edit flag is not a valid option for git rebase.
@@ -287,7 +287,7 @@ Important notes:
 git commit -m "$(cat <<'EOF'
    Commit message here.
 
-   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+   Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
    EOF
    )"
 </example>
@@ -323,7 +323,7 @@ EOF
 </example>
 
 Important:
-- DO NOT use the TodoWrite or Agent tools
+- DO NOT use the TaskCreate or Agent tools
 - Return the PR URL when you're done, so the user can see it
 
 # Other common operations

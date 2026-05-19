@@ -1095,7 +1095,6 @@ fn kimi_cli_root_tool_names_match_official_active_tool_list() {
         "TaskOutput",
         "TaskStop",
         "ReadFile",
-        "ReadMediaFile",
         "Glob",
         "Grep",
         "WriteFile",
@@ -1115,7 +1114,6 @@ fn kimi_cli_root_tool_names_match_official_active_tool_list() {
         ("TaskOutput", ToolHandlerKind::KimiTaskOutput),
         ("TaskStop", ToolHandlerKind::KimiTaskStop),
         ("ReadFile", ToolHandlerKind::KimiReadFile),
-        ("ReadMediaFile", ToolHandlerKind::KimiReadMediaFile),
         ("Glob", ToolHandlerKind::KimiGlob),
         ("Grep", ToolHandlerKind::KimiGrep),
         ("WriteFile", ToolHandlerKind::KimiWriteFile),
@@ -1133,6 +1131,40 @@ fn kimi_cli_root_tool_names_match_official_active_tool_list() {
             "missing handler for Kimi CLI tool {tool}"
         );
     }
+}
+
+#[test]
+fn kimi_cli_omits_read_media_file() {
+    let model_info = model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    })
+    .with_harness(Some("kimi-cli"));
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[],
+    );
+
+    let actual = tools
+        .iter()
+        .map(ConfiguredToolSpec::name)
+        .collect::<Vec<_>>();
+    assert!(!actual.contains(&"ReadMediaFile"));
+    assert!(!handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("ReadMediaFile"),
+        kind: ToolHandlerKind::KimiReadMediaFile,
+    }));
 }
 
 #[test]

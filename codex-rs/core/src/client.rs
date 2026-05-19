@@ -24,8 +24,6 @@
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -117,7 +115,6 @@ use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::harness::claude_code::CLAUDE_CODE_APP_HEADER;
 use crate::harness::claude_code::CLAUDE_CODE_BETA_HEADER;
 use crate::harness::claude_code::CLAUDE_CODE_STARTUP_HEAD_USER_AGENT;
-use crate::harness::claude_code::CLAUDE_CODE_STARTUP_MODELS_USER_AGENT;
 use crate::harness::claude_code::CLAUDE_CODE_TITLE_BETA_HEADER;
 use crate::harness::claude_code::CLAUDE_CODE_USER_AGENT;
 use crate::harness::claude_code::build_request as build_claude_code_request;
@@ -190,7 +187,6 @@ struct ModelClientState {
     harness: Harness,
     harness_guidance: bool,
     claude_code_startup_preflight_sent: AtomicBool,
-    claude_code_title_preflight_sent: AtomicBool,
     disable_websockets: AtomicBool,
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
@@ -359,7 +355,6 @@ impl ModelClient {
                 harness,
                 harness_guidance,
                 claude_code_startup_preflight_sent: AtomicBool::new(false),
-                claude_code_title_preflight_sent: AtomicBool::new(false),
                 disable_websockets: AtomicBool::new(false),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
@@ -1398,8 +1393,7 @@ impl ModelClientSession {
             };
             let request_auth_mode = auth_mode.or(Some(AuthMode::ApiKey));
             let mut api_provider = self.client.state.provider.api_provider().await?;
-            self.send_claude_code_startup_preflight(&api_provider, &api_key)
-                .await;
+            let is_startup_preflight = self.send_claude_code_startup_preflight(&api_provider).await;
             let mut query_params = api_provider.query_params.take().unwrap_or_default();
             query_params.insert("beta".to_string(), "true".to_string());
             api_provider.query_params = Some(query_params);
@@ -1475,102 +1469,64 @@ impl ModelClientSession {
             .map_err(|err| {
                 CodexErr::InvalidRequest(format!("invalid claude-code request: {err}"))
             })?;
-            let title_request = build_claude_code_title_request(prompt, &claude_code_session_id)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("invalid claude-code title request: {err}"))
-                })?;
-            let title_request = if title_request.is_some()
-                && self
-                    .client
-                    .state
-                    .claude_code_title_preflight_sent
-                    .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-            {
-                title_request
-            } else {
-                None
-            };
-            let debug_title_preflight = |message: String| {
-                if let Some(path) =
-                    std::env::var_os("OPEN_INTERPRETER_CLAUDE_CODE_DEBUG_TITLE_PREFLIGHT_PATH")
-                    && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path)
-                {
-                    let _ = writeln!(file, "{message}");
-                }
-            };
-            if std::env::var_os("OPEN_INTERPRETER_CLAUDE_CODE_DEBUG_TITLE_PREFLIGHT").is_some() {
-                tracing::warn!(
-                    should_try_title = title_request.is_some(),
-                    title_request_present = title_request.is_some(),
-                    prompt_items = prompt.input.len(),
-                    "claude-code title preflight decision"
-                );
-                debug_title_preflight(format!(
-                    "decision should_try_title={} title_request_present={} prompt_items={} prompt_has_tools={}",
-                    title_request.is_some(),
-                    title_request.is_some(),
-                    prompt.input.len(),
-                    !prompt.tools.is_empty()
-                ));
-            }
-            let client = ApiAnthropicMessagesClient::new(
-                ReqwestTransport::new(build_reqwest_client()),
-                api_provider.clone(),
-                Arc::new(auth_provider.clone()),
-            )
-            .with_telemetry(Some(request_telemetry.clone()), Some(sse_telemetry.clone()));
-            if let Some(title_request) = title_request {
-                debug_title_preflight("sending title preflight".to_string());
-                let mut title_headers = extra_headers.clone();
-                title_headers.insert(
-                    "anthropic-beta",
-                    HeaderValue::from_static(CLAUDE_CODE_TITLE_BETA_HEADER),
-                );
-                match client.stream_request(title_request, title_headers).await {
-                    Ok(mut title_stream) => {
-                        debug_title_preflight("title preflight request accepted".to_string());
-                        while let Some(event) = title_stream.next().await {
-                            match event {
-                                Ok(ResponseEvent::Completed { .. }) => {
-                                    debug_title_preflight("title preflight completed".to_string());
-                                    break;
-                                }
-                                Ok(_) => {}
-                                Err(err) => {
-                                    debug_title_preflight(format!(
-                                        "title preflight stream error: {err}"
-                                    ));
-                                    tracing::warn!(
-                                        error = %err,
-                                        "claude-code title preflight failed; continuing with main request"
-                                    );
-                                    break;
+            if is_startup_preflight && !request.tools.is_empty() {
+                let title_request =
+                    build_claude_code_title_request(prompt, model_info, &claude_code_session_id)
+                        .map_err(|err| {
+                            CodexErr::InvalidRequest(format!(
+                                "invalid claude-code title request: {err}"
+                            ))
+                        })?;
+                if let Some(title_request) = title_request {
+                    let mut title_headers = extra_headers.clone();
+                    title_headers.insert(
+                        "anthropic-beta",
+                        HeaderValue::from_static(CLAUDE_CODE_TITLE_BETA_HEADER),
+                    );
+                    match ApiAnthropicMessagesClient::new(
+                        ReqwestTransport::new(build_reqwest_client()),
+                        api_provider.clone(),
+                        Arc::new(auth_provider.clone()),
+                    )
+                    .with_telemetry(Some(request_telemetry.clone()), Some(sse_telemetry.clone()))
+                    .stream_request(title_request, title_headers)
+                    .await
+                    {
+                        Ok(mut title_stream) => {
+                            while let Some(event) = title_stream.next().await {
+                                match event {
+                                    Ok(ResponseEvent::Completed { .. }) => break,
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            error = %err,
+                                            "claude-code title preflight failed; continuing with main request"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(ApiError::Transport(
-                        unauthorized_transport @ TransportError::Http { status, .. },
-                    )) if status == StatusCode::UNAUTHORIZED => {
-                        debug_title_preflight("title preflight unauthorized; retrying".to_string());
-                        pending_retry = PendingUnauthorizedRetry::from_recovery(
-                            handle_unauthorized(
-                                unauthorized_transport,
-                                &mut auth_recovery,
-                                session_telemetry,
-                            )
-                            .await?,
-                        );
-                        continue;
-                    }
-                    Err(err) => {
-                        let error = map_api_error(err);
-                        debug_title_preflight(format!("title preflight request error: {error}"));
-                        tracing::warn!(
-                            error = %error,
-                            "claude-code title preflight request failed; continuing with main request"
-                        );
+                        Err(ApiError::Transport(
+                            unauthorized_transport @ TransportError::Http { status, .. },
+                        )) if status == StatusCode::UNAUTHORIZED => {
+                            pending_retry = PendingUnauthorizedRetry::from_recovery(
+                                handle_unauthorized(
+                                    unauthorized_transport,
+                                    &mut auth_recovery,
+                                    session_telemetry,
+                                )
+                                .await?,
+                            );
+                            continue;
+                        }
+                        Err(err) => {
+                            let error = map_api_error(err);
+                            tracing::warn!(
+                                error = %error,
+                                "claude-code title preflight request failed; continuing with main request"
+                            );
+                        }
                     }
                 }
             }
@@ -1609,7 +1565,7 @@ impl ModelClientSession {
         }
     }
 
-    async fn send_claude_code_startup_preflight(&self, api_provider: &ApiProvider, api_key: &str) {
+    async fn send_claude_code_startup_preflight(&self, api_provider: &ApiProvider) -> bool {
         if self
             .client
             .state
@@ -1617,7 +1573,7 @@ impl ModelClientSession {
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
         {
-            return;
+            return false;
         }
 
         let client = build_reqwest_client();
@@ -1632,28 +1588,7 @@ impl ModelClientSession {
                 "claude-code startup HEAD preflight failed; continuing"
             );
         }
-
-        let mut models_provider = api_provider.clone();
-        models_provider.query_params =
-            Some(HashMap::from([("limit".to_string(), "1000".to_string())]));
-        match client
-            .get(models_provider.url_for_path("v1/models"))
-            .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("user-agent", CLAUDE_CODE_STARTUP_MODELS_USER_AGENT)
-            .header("x-api-key", api_key)
-            .send()
-            .await
-        {
-            Ok(response) => {
-                let _ = response.bytes().await;
-            }
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "claude-code startup models preflight failed; continuing"
-                );
-            }
-        }
+        true
     }
 
     async fn stream_messages_harness_api(

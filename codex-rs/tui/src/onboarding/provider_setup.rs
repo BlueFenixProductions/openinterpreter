@@ -12,7 +12,7 @@ use crate::config_write_edits::clear_path;
 use crate::config_write_edits::set_path;
 use crate::oss_provider_bootstrap::default_model_for_oss_provider;
 
-const OPENAI_API_KEY_PROVIDER_ID: &str = "openai_api_key";
+pub(crate) const OPENAI_API_KEY_PROVIDER_ID: &str = "openai_api_key";
 const ADD_COMPATIBLE_PROVIDER_ID: &str = "openinterpreter_add_compatible_provider";
 const CUSTOM_PROVIDER_ID_PREFIX: &str = "compatible_";
 const LMSTUDIO_BASE_URL: &str = "http://localhost:1234/v1";

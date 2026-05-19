@@ -1328,7 +1328,7 @@ async fn stdio_image_responses_preserve_original_detail_metadata() -> anyhow::Re
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(mcp_test_value)]
-async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Result<()> {
+async fn stdio_image_responses_use_remote_model_metadata_path() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -1336,7 +1336,29 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
     let call_id = "img-text-only-1";
     let server_name = "rmcp";
     let namespace = format!("mcp__{server_name}__");
-    let text_only_model_slug = "rmcp-text-only-model";
+    let text_only_model_slug = "gpt-5.4";
+
+    // First stream: model decides to call the image tool.
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call_with_namespace(call_id, &namespace, "image", "{}"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    // Second stream: after tool execution, assistant emits a message and completes.
+    let final_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-1", "rmcp image tool completed successfully."),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
 
     let models_mock = mount_models_once(
         &server,
@@ -1350,6 +1372,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                     effort: codex_protocol::openai_models::ReasoningEffort::Medium,
                     description: "Medium".to_string(),
                 }],
+                reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
                 shell_type: ConfigShellToolType::Default,
                 visibility: ModelVisibility::List,
                 supported_in_api: true,
@@ -1381,28 +1404,6 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
     )
     .await;
 
-    // First stream: model decides to call the image tool.
-    mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-1"),
-            responses::ev_function_call_with_namespace(call_id, &namespace, "image", "{}"),
-            responses::ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-    // Second stream: after tool execution, assistant emits a message and completes.
-    let final_mock = mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_assistant_message("msg-1", "rmcp image tool completed successfully."),
-            responses::ev_completed("resp-2"),
-        ]),
-    )
-    .await;
-
-    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
-
     let fixture = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
@@ -1432,6 +1433,33 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
         .list_models(RefreshStrategy::Online)
         .await;
     assert_eq!(models_mock.requests().len(), 1);
+    let model_info = fixture
+        .thread_manager
+        .get_models_manager()
+        .get_model_info(
+            text_only_model_slug,
+            &fixture.config.to_models_manager_config(),
+        )
+        .await;
+    assert_eq!(model_info.input_modalities, vec![InputModality::Text]);
+
+    fixture
+        .codex
+        .submit(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox_policy: None,
+            permission_profile: None,
+            windows_sandbox_level: None,
+            model: Some(text_only_model_slug.to_string()),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
 
     fixture
         .codex
@@ -1467,19 +1495,22 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let output_item = final_mock.single_request().function_call_output(call_id);
-    let output_text = output_item
-        .get("output")
-        .and_then(Value::as_str)
-        .expect("function_call_output output should be a JSON string");
-    let wrapped_payload = split_wall_time_wrapped_output(output_text);
-    let output_json: Value = serde_json::from_str(wrapped_payload)
-        .expect("function_call_output output should be valid JSON");
+    let output_json = output_item["output"]
+        .as_array()
+        .expect("sanitized MCP image output should be content items");
+    assert_eq!(output_json.len(), 2);
+    assert_wall_time_header(
+        output_json[0]["text"]
+            .as_str()
+            .expect("first MCP image output item should be wall-time text"),
+    );
     assert_eq!(
-        output_json,
-        json!([{
-            "type": "text",
-            "text": "<image content omitted because you do not support image input>"
-        }])
+        output_json[1],
+        json!({
+            "type": "input_image",
+            "image_url": OPENAI_PNG,
+            "detail": "high"
+        })
     );
     server.verify().await;
     Ok(())

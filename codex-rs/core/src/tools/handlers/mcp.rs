@@ -90,11 +90,22 @@ impl ToolHandler for McpHandler {
             arguments_str,
         )
         .await;
+        let model_info = session
+            .services
+            .models_manager
+            .get_model_info(
+                turn.collaboration_mode.model(),
+                &turn.config.to_models_manager_config(),
+            )
+            .await;
 
         Ok(McpToolOutput {
             result: result.result,
             tool_input: result.tool_input,
             wall_time: started.elapsed(),
+            supports_image_input: model_info
+                .input_modalities
+                .contains(&codex_protocol::openai_models::InputModality::Image),
             original_image_detail_supported: can_request_original_image_detail(&turn.model_info),
         })
     }
@@ -180,6 +191,7 @@ mod tests {
                 }
             }),
             wall_time: Duration::from_millis(42),
+            supports_image_input: true,
             original_image_detail_supported: true,
         };
         let (session, turn) = make_session_and_context().await;

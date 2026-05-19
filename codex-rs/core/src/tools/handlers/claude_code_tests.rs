@@ -1,5 +1,6 @@
 use super::*;
 use crate::session::tests::make_session_and_context;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -15,6 +16,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 fn invocation(
     session: Session,
@@ -25,9 +27,11 @@ fn invocation(
     ToolInvocation {
         session: Arc::new(session),
         turn: Arc::new(turn),
+        cancellation_token: CancellationToken::new(),
         tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
         call_id: "call_1".to_string(),
         tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
         payload: ToolPayload::Function {
             arguments: arguments.to_string(),
         },
@@ -91,6 +95,59 @@ async fn read_treats_offset_as_one_based() {
         .into_text();
 
     assert_eq!(output, "2\tONE");
+}
+
+#[tokio::test]
+async fn read_large_file_without_range_returns_captured_size_message() {
+    let (session, turn) = make_session_and_context().await;
+    let path = turn.cwd.join("read-large-target.txt");
+    tokio::fs::write(
+        path.as_path(),
+        "x".repeat(CLAUDE_READ_MAX_WHOLE_FILE_BYTES + 1),
+    )
+    .await
+    .expect("write file");
+
+    let output = ClaudeReadHandler
+        .handle(invocation(
+            session,
+            turn,
+            "Read",
+            json!({
+                "file_path": path.to_string_lossy()
+            }),
+        ))
+        .await
+        .expect("read succeeds")
+        .into_text();
+
+    assert_eq!(
+        output,
+        "File content (0.3MB) exceeds maximum allowed size (256KB). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file."
+    );
+}
+
+#[tokio::test]
+async fn bash_empty_failure_returns_claude_exit_code_message() {
+    let (session, mut turn) = make_session_and_context().await;
+    set_danger_full_access(&mut turn);
+
+    let result = ClaudeBashHandler
+        .handle(invocation(
+            session,
+            turn,
+            "Bash",
+            json!({
+                "command": "false",
+                "description": "Run false command"
+            }),
+        ))
+        .await;
+
+    assert_eq!(
+        result.err(),
+        Some(FunctionCallError::RespondToModel("Exit code 1".to_string()))
+    );
 }
 
 #[test]
@@ -200,7 +257,10 @@ async fn write_creates_file_and_returns_claude_message() {
 
     assert_eq!(
         output,
-        format!("File created successfully at: {}", path.display())
+        format!(
+            "File created successfully at: {} (file state is current in your context — no need to Read it back)",
+            path.display()
+        )
     );
     assert_eq!(
         tokio::fs::read_to_string(path.as_path())
@@ -270,7 +330,10 @@ async fn edit_updates_matching_text() {
 
     assert_eq!(
         output,
-        format!("The file {} has been updated.", path.display())
+        format!(
+            "The file {} has been updated successfully. (file state is current in your context — no need to Read it back)",
+            path.display()
+        )
     );
     assert_eq!(
         tokio::fs::read_to_string(path.as_path())
@@ -317,6 +380,38 @@ async fn edit_replace_all_uses_claude_message() {
             .await
             .expect("read edited file"),
         "TOKEN_NEW\nTOKEN_NEW\n"
+    );
+}
+
+#[tokio::test]
+async fn edit_trims_new_string_trailing_horizontal_whitespace() {
+    let (session, mut turn) = make_session_and_context().await;
+    set_danger_full_access(&mut turn);
+    let path = turn.cwd.join("edit-trims-new-string-target.txt");
+    tokio::fs::write(path.as_path(), "before\nOLD_VALUE\nafter\n")
+        .await
+        .expect("write file");
+
+    ClaudeEditHandler
+        .handle(invocation(
+            session,
+            turn,
+            "Edit",
+            json!({
+                "file_path": path.to_string_lossy(),
+                "old_string": "OLD_VALUE",
+                "new_string": "NEW_VALUE  \nNEXT\t",
+                "replace_all": false
+            }),
+        ))
+        .await
+        .expect("edit succeeds");
+
+    assert_eq!(
+        tokio::fs::read_to_string(path.as_path())
+            .await
+            .expect("read edited file"),
+        "before\nNEW_VALUE\nNEXT\nafter\n"
     );
 }
 

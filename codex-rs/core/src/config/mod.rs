@@ -912,26 +912,12 @@ impl Config {
     }
 
     #[cfg(test)]
-    pub(crate) fn load_from_base_config_with_overrides(
+    pub(crate) async fn load_from_base_config_with_overrides<P: AsRef<Path>>(
         cfg: ConfigToml,
         overrides: ConfigOverrides,
-        codex_home: PathBuf,
+        codex_home: P,
     ) -> std::io::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(std::io::Error::other)?;
-        runtime.block_on(Self::load_from_base_config_with_overrides_async(
-            cfg, overrides, codex_home,
-        ))
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn load_from_base_config_with_overrides_async(
-        cfg: ConfigToml,
-        overrides: ConfigOverrides,
-        codex_home: PathBuf,
-    ) -> std::io::Result<Self> {
+        let codex_home = codex_home.as_ref().to_path_buf();
         let codex_home = AbsolutePathBuf::from_absolute_path_checked(codex_home)?;
         let config_layer_stack = ConfigLayerStack::default();
         Self::load_config_with_layer_stack(

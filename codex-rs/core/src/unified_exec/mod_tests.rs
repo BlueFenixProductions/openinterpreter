@@ -541,21 +541,30 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminate_all_processes_detaches_preserved_pipe_command() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
-    let (session, turn) = test_session_and_turn().await;
+    let (session, mut turn) = make_session_and_context().await;
+    turn.sandbox_policy
+        .set(codex_protocol::protocol::SandboxPolicy::DangerFullAccess)?;
+    turn.file_system_sandbox_policy =
+        codex_protocol::permissions::FileSystemSandboxPolicy::from(turn.sandbox_policy.get());
+    turn.network_sandbox_policy =
+        codex_protocol::permissions::NetworkSandboxPolicy::from(turn.sandbox_policy.get());
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
     let manager = &session.services.unified_exec_manager;
     let process_id = manager.allocate_process_id().await;
-    let temp_dir =
-        std::env::temp_dir().join(format!("oi-preserved-process-test-{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir)?;
-    let pid_file = temp_dir.join("pid");
-    let command_text = format!("echo $$ > {}; sleep 60", pid_file.display());
+    let temp_dir = tempfile::Builder::new()
+        .prefix("oi-preserved-process-test-")
+        .tempdir_in(turn.cwd.as_path())?;
+    let temp_dir_path = AbsolutePathBuf::from_absolute_path(temp_dir.path())?;
+    let pid_file = temp_dir.path().join("pid");
+    let command_text = "echo $$ > pid; sleep 60".to_string();
     let request = ExecCommandRequest {
         command: vec!["bash".to_string(), "-lc".to_string(), command_text.clone()],
         hook_command: command_text,
         process_id,
         yield_time_ms: MIN_YIELD_TIME_MS,
         max_output_tokens: None,
-        workdir: Some(turn.cwd.clone()),
+        workdir: Some(temp_dir_path),
         network: None,
         tty: false,
         sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
@@ -574,14 +583,22 @@ async fn terminate_all_processes_detaches_preserved_pipe_command() -> anyhow::Re
 
     assert_eq!(output.process_id, Some(process_id));
     let mut child_pid = None;
-    for _ in 0..20 {
+    for _ in 0..100 {
         if let Ok(pid_text) = std::fs::read_to_string(&pid_file) {
             child_pid = Some(pid_text.trim().parse::<i32>()?);
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let child_pid = child_pid.expect("background process should write its pid");
+    let child_pid = child_pid.unwrap_or_else(|| {
+        panic!(
+            "background process should write its pid to {}; output={:?}; process_id={:?}; exit_code={:?}",
+            pid_file.display(),
+            String::from_utf8_lossy(&output.raw_output),
+            output.process_id,
+            output.exit_code
+        )
+    });
 
     manager.terminate_all_processes().await;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -598,7 +615,6 @@ async fn terminate_all_processes_detaches_preserved_pipe_command() -> anyhow::Re
         .arg("-TERM")
         .arg(format!("-{child_pid}"))
         .status();
-    let _ = std::fs::remove_dir_all(temp_dir);
     Ok(())
 }
 

@@ -8,6 +8,7 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningControl;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
@@ -56,6 +57,7 @@ async fn models_client_hits_models_endpoint() {
             display_name: "gpt-test".to_string(),
             description: Some("desc".to_string()),
             default_reasoning_level: Some(ReasoningEffort::Medium),
+            reasoning_control: ReasoningControl::None,
             supported_reasoning_levels: vec![
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::Low,

@@ -16,13 +16,15 @@ cargo build \
   --target-dir "$codex_rs_dir/target" \
   --release \
   -p codex-server-cli --bins \
-  -p codex-root-tui --bin interpreter-root-tui
+  -p codex-root-tui --bin interpreter-root-tui \
+  -p codex-exec --bin interpreter-exec
 
 required_bins=(
   interpreter
   interpreter-tui
   interpreter-app-server
   interpreter-root-tui
+  interpreter-exec
 )
 
 for bin in "${required_bins[@]}"; do

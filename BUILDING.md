@@ -18,6 +18,7 @@ used. It builds the complete release binary set required by `interpreter`:
 - `codex-rs/target/release/interpreter-tui`
 - `codex-rs/target/release/interpreter-app-server`
 - `codex-rs/target/release/interpreter-root-tui`
+- `codex-rs/target/release/interpreter-exec`
 
 It then installs or updates `~/.local/bin/interpreter` so typing `interpreter`
 runs the release launcher from this checkout.

@@ -159,6 +159,8 @@ mod tests {
             token: Some(token),
             account_id: None,
             is_fedramp_account: false,
+            token_header_name: None,
+            use_bearer_prefix: true,
         };
         let mut headers = http::HeaderMap::new();
 

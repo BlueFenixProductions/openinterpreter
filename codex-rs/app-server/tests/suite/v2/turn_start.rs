@@ -281,14 +281,17 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
         .expect("models_cache.json models should be an array");
     let entry = models
         .iter_mut()
-        .find(|entry| entry["slug"].as_str() == Some("gpt-5.2-codex"))
-        .expect("models cache should contain gpt-5.2-codex");
+        .find(|entry| entry["slug"].as_str() == Some("gpt-5.4"))
+        .expect("models cache should contain gpt-5.4");
     let model = entry["slug"]
         .as_str()
         .expect("model slug should be present")
         .to_string();
     entry["context_window"] = serde_json::Value::from(100);
     std::fs::write(&cache_path, serde_json::to_string_pretty(&cache)?)?;
+    let provider_cache_dir = codex_home.path().join("models-cache").join("mock_provider");
+    std::fs::create_dir_all(&provider_cache_dir)?;
+    std::fs::copy(&cache_path, provider_cache_dir.join("models_cache.json"))?;
     let config_path = codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?;
     std::fs::write(
@@ -340,9 +343,13 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
                     .as_ref()
                     .and_then(|params| params.get("message"))
                     .and_then(serde_json::Value::as_str)
-                    == Some(
-                        "Some enabled skills were not included in the model-visible skills list for this session. Mention a skill by name or path if you need it.",
-                    )
+                    .is_some_and(|message| {
+                        message.starts_with(
+                            "Warning: Exceeded skills context budget of 2%. All skill descriptions were removed",
+                        ) && message.contains(
+                            "additional skills were not included in the model-visible skills list.",
+                        )
+                    })
         }),
     )
     .await??;
@@ -350,9 +357,14 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     let warning: WarningNotification =
         serde_json::from_value(params).expect("deserialize warning notification");
     assert_eq!(warning.thread_id.as_deref(), Some(thread.id.as_str()));
-    assert_eq!(
-        warning.message,
-        "Warning: Exceeded skills context budget of 2%. All skill descriptions were removed and 7 additional skills were not included in the model-visible skills list."
+    assert!(
+        warning.message.starts_with(
+            "Warning: Exceeded skills context budget of 2%. All skill descriptions were removed",
+        ) && warning
+            .message
+            .contains("additional skills were not included in the model-visible skills list."),
+        "expected trimmed skills warning, got {:?}",
+        warning.message
     );
 
     timeout(

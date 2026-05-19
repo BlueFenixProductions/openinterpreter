@@ -541,30 +541,33 @@ mod tests {
             },
         );
 
-        super::build_runtime()?.block_on(run_main_with_arg0_guard(
-            /*path_entry_guard*/ Some(path_entry),
-            Some(PathBuf::from("/usr/bin/codex")),
-            |paths| async move {
-                let alias_path = paths
-                    .codex_linux_sandbox_exe
-                    .or(paths.main_execve_wrapper_exe)
-                    .expect("unix dispatch should create at least one alias path");
-                ensure!(
-                    alias_path.exists(),
-                    "alias path disappeared before main future was polled: {}",
-                    alias_path.display()
-                );
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(run_main_with_arg0_guard(
+                /*path_entry_guard*/ Some(path_entry),
+                Some(PathBuf::from("/usr/bin/codex")),
+                |paths| async move {
+                    let alias_path = paths
+                        .codex_linux_sandbox_exe
+                        .or(paths.main_execve_wrapper_exe)
+                        .expect("unix dispatch should create at least one alias path");
+                    ensure!(
+                        alias_path.exists(),
+                        "alias path disappeared before main future was polled: {}",
+                        alias_path.display()
+                    );
 
-                tokio::task::yield_now().await;
+                    tokio::task::yield_now().await;
 
-                ensure!(
-                    alias_path.exists(),
-                    "alias path disappeared while main future was running: {}",
-                    alias_path.display()
-                );
-                Ok(())
-            },
-        ))
+                    ensure!(
+                        alias_path.exists(),
+                        "alias path disappeared while main future was running: {}",
+                        alias_path.display()
+                    );
+                    Ok(())
+                },
+            ))
     }
 
     #[test]

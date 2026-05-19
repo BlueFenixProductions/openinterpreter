@@ -6,7 +6,7 @@ license.workspace = true
 autotests = false
 
 [[bin]]
-name = "codex-exec"
+name = "interpreter-exec"
 path = "src/main.rs"
 
 [lib]

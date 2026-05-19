@@ -19,7 +19,10 @@ pub fn bundled_provider_model_infos(provider: &ModelProviderInfo) -> Vec<ModelIn
             .or_else(|| {
                 bundled_provider_catalog().iter().find(|entry| {
                     entry.name.eq_ignore_ascii_case(provider.name.as_str())
-                        || entry.env_key.as_deref() == provider.env_key.as_deref()
+                        || provider
+                            .env_key
+                            .as_deref()
+                            .is_some_and(|env_key| entry.env_key.as_deref() == Some(env_key))
                 })
             })
     };

@@ -306,9 +306,9 @@ fn kimi_glob_directory_error(turn: &TurnContext, directory: Option<&str>) -> Opt
 }
 
 fn format_kimi_grep_line(raw_search_root: Option<&str>, search_root: &Path, line: &str) -> String {
-    let Some(raw_search_root) = raw_search_root else {
+    if raw_search_root.is_none() {
         return line.to_string();
-    };
+    }
     let Some((path, suffix)) = split_grep_path_suffix(line) else {
         return line.to_string();
     };
@@ -319,11 +319,11 @@ fn format_kimi_grep_line(raw_search_root: Option<&str>, search_root: &Path, line
     let Ok(relative) = path.strip_prefix(search_root) else {
         return line.to_string();
     };
-    let raw_path = Path::new(raw_search_root).join(relative);
+    let relative_path = relative.display();
     if suffix.is_empty() {
-        raw_path.display().to_string()
+        relative_path.to_string()
     } else {
-        format!("{}{}", raw_path.display(), suffix)
+        format!("{relative_path}{suffix}")
     }
 }
 
@@ -405,5 +405,33 @@ mod tests {
             vec!["task_file/input_data/requests_bucket_1.jsonl"]
         );
         Ok(())
+    }
+
+    #[test]
+    fn kimi_grep_files_with_matches_strips_absolute_search_root() {
+        let line = "/tmp/workspace/docs/source.txt";
+
+        assert_eq!(
+            format_kimi_grep_line(
+                Some("/tmp/workspace/docs"),
+                Path::new("/tmp/workspace/docs"),
+                line
+            ),
+            "source.txt"
+        );
+    }
+
+    #[test]
+    fn kimi_grep_content_strips_absolute_search_root_and_keeps_suffix() {
+        let line = "/tmp/workspace/docs/source.txt:2:NEEDLE_OLD";
+
+        assert_eq!(
+            format_kimi_grep_line(
+                Some("/tmp/workspace/docs"),
+                Path::new("/tmp/workspace/docs"),
+                line
+            ),
+            "source.txt:2:NEEDLE_OLD"
+        );
     }
 }

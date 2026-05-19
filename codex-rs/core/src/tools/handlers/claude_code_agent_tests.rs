@@ -2,6 +2,7 @@ use super::*;
 use crate::ThreadManager;
 use crate::agent::claude_agent_external_id;
 use crate::session::tests::make_session_and_context;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 fn invocation(
     session: Arc<crate::session::Session>,
@@ -25,9 +27,11 @@ fn invocation(
     ToolInvocation {
         session,
         turn,
+        cancellation_token: CancellationToken::new(),
         tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
         call_id: "call_1".to_string(),
         tool_name: codex_tools::ToolName::plain("Agent"),
+        source: ToolCallSource::Direct,
         payload: ToolPayload::Function {
             arguments: arguments.to_string(),
         },
@@ -103,6 +107,7 @@ async fn foreground_agent_returns_child_completion_message() {
                 last_agent_message: Some("CHILD_DONE".to_string()),
                 completed_at: None,
                 duration_ms: None,
+                time_to_first_token_ms: None,
             }),
         )
         .await;

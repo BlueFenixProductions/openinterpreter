@@ -29,6 +29,7 @@ clap = { workspace = true, features = ["derive"] }
 codex-app-server = { workspace = true }
 codex-app-server-launcher = { workspace = true }
 codex-arg0 = { workspace = true }
+codex-cli = { workspace = true }
 codex-core = { workspace = true }
 codex-git-utils = { workspace = true }
 codex-login = { workspace = true }
@@ -51,6 +52,7 @@ async-stream = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
+codex-utils-pty = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 vt100 = { workspace = true }

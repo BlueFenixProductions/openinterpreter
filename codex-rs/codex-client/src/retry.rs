@@ -27,14 +27,30 @@ impl RetryOn {
             return false;
         }
         match err {
-            TransportError::Http { status, .. } => {
-                (self.retry_429 && status.as_u16() == 429)
+            TransportError::Http { status, body, .. } => {
+                (self.retry_429 && status.as_u16() == 429 && !is_usage_limit_reached(body))
                     || (self.retry_5xx && status.is_server_error())
             }
             TransportError::Timeout | TransportError::Network(_) => self.retry_transport,
             _ => false,
         }
     }
+}
+
+fn is_usage_limit_reached(body: &Option<String>) -> bool {
+    let Some(body) = body else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/type")
+                .and_then(|kind| kind.as_str())
+                .map(str::to_string)
+        })
+        .as_deref()
+        == Some("usage_limit_reached")
 }
 
 pub fn backoff(base: Duration, attempt: u64) -> Duration {
@@ -125,6 +141,23 @@ mod tests {
             retry_delay(Duration::from_millis(200), 1, &err),
             Duration::from_secs(10)
         );
+    }
+
+    #[test]
+    fn retry_on_does_not_retry_usage_limit_429() {
+        let err = TransportError::Http {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            url: None,
+            headers: None,
+            body: Some(r#"{"error":{"type":"usage_limit_reached"}}"#.to_string()),
+        };
+        let retry_on = RetryOn {
+            retry_429: true,
+            retry_5xx: true,
+            retry_transport: true,
+        };
+
+        assert!(!retry_on.should_retry(&err, /*attempt*/ 0, /*max_attempts*/ 4));
     }
 
     #[test]

@@ -11,6 +11,9 @@ use std::time::Instant;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::ExecCommandSource;
 
+const ACTIVE_EXEC_OUTPUT_MAX_BYTES_ENV: &str = "INTERPRETER_TUI_ACTIVE_EXEC_OUTPUT_MAX_BYTES";
+const OUTPUT_TRUNCATED_MARKER: &str = "[output truncated]\n";
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommandOutput {
     pub(crate) exit_code: i32,
@@ -148,6 +151,9 @@ impl ExecCell {
         };
         let output = call.output.get_or_insert_with(CommandOutput::default);
         output.aggregated_output.push_str(chunk);
+        if let Some(max_bytes) = active_exec_output_max_bytes() {
+            trim_active_output(&mut output.aggregated_output, max_bytes);
+        }
         true
     }
 
@@ -165,6 +171,30 @@ impl ExecCell {
     }
 }
 
+fn active_exec_output_max_bytes() -> Option<usize> {
+    std::env::var(ACTIVE_EXEC_OUTPUT_MAX_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|max_bytes| *max_bytes > OUTPUT_TRUNCATED_MARKER.len())
+}
+
+fn trim_active_output(output: &mut String, max_bytes: usize) {
+    if output.len() <= max_bytes {
+        return;
+    }
+
+    let marker_budget = OUTPUT_TRUNCATED_MARKER.len();
+    let keep_bytes = max_bytes.saturating_sub(marker_budget);
+    let mut start = output.len().saturating_sub(keep_bytes);
+    while start < output.len() && !output.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = output[start..].to_string();
+    output.clear();
+    output.push_str(OUTPUT_TRUNCATED_MARKER);
+    output.push_str(&tail);
+}
+
 impl ExecCall {
     pub(crate) fn is_user_shell_command(&self) -> bool {
         matches!(self.source, ExecCommandSource::UserShell)
@@ -172,5 +202,37 @@ impl ExecCall {
 
     pub(crate) fn is_unified_exec_interaction(&self) -> bool {
         matches!(self.source, ExecCommandSource::UnifiedExecInteraction)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OUTPUT_TRUNCATED_MARKER;
+    use super::trim_active_output;
+
+    #[test]
+    fn trim_active_output_keeps_tail_with_marker() {
+        let mut output = "line-1\nline-2\nline-3\nline-4\n".to_string();
+
+        trim_active_output(
+            &mut output,
+            OUTPUT_TRUNCATED_MARKER.len() + "line-4\n".len(),
+        );
+
+        assert_eq!(output, format!("{OUTPUT_TRUNCATED_MARKER}line-4\n"));
+    }
+
+    #[test]
+    fn trim_active_output_preserves_utf8_boundary() {
+        let mut output = "alpha\n😀😀😀😀😀😀\nomega\n".to_string();
+
+        trim_active_output(
+            &mut output,
+            OUTPUT_TRUNCATED_MARKER.len() + "😀\nomega\n".len(),
+        );
+
+        assert!(output.starts_with(OUTPUT_TRUNCATED_MARKER));
+        assert!(output.ends_with("omega\n"));
+        assert!(std::str::from_utf8(output.as_bytes()).is_ok());
     }
 }

@@ -78,7 +78,7 @@ mod tests {
     fn lagged_event_warning_message_is_transport_neutral() {
         assert_eq!(
             lagged_event_warning_message(/*skipped*/ 7),
-            "app-server event stream lagged; dropped 7 events".to_string()
+            "in-process app-server event stream lagged; dropped 7 events".to_string()
         );
     }
 

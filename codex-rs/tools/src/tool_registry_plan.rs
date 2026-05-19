@@ -51,7 +51,6 @@ use crate::create_kimi_cli_fetch_url_tool;
 use crate::create_kimi_cli_glob_tool;
 use crate::create_kimi_cli_grep_tool;
 use crate::create_kimi_cli_read_file_tool;
-use crate::create_kimi_cli_read_media_file_tool;
 use crate::create_kimi_cli_search_web_tool;
 use crate::create_kimi_cli_set_todo_list_tool;
 use crate::create_kimi_cli_shell_tool;
@@ -349,11 +348,6 @@ pub fn build_tool_registry_plan(
                 /*code_mode_enabled*/ false,
             );
             plan.push_spec(
-                create_kimi_cli_read_media_file_tool(),
-                /*supports_parallel_tool_calls*/ true,
-                /*code_mode_enabled*/ false,
-            );
-            plan.push_spec(
                 create_kimi_cli_glob_tool(),
                 /*supports_parallel_tool_calls*/ true,
                 /*code_mode_enabled*/ false,
@@ -401,7 +395,6 @@ pub fn build_tool_registry_plan(
             plan.register_handler("TaskOutput", ToolHandlerKind::KimiTaskOutput);
             plan.register_handler("TaskStop", ToolHandlerKind::KimiTaskStop);
             plan.register_handler("ReadFile", ToolHandlerKind::KimiReadFile);
-            plan.register_handler("ReadMediaFile", ToolHandlerKind::KimiReadMediaFile);
             plan.register_handler("Glob", ToolHandlerKind::KimiGlob);
             plan.register_handler("Grep", ToolHandlerKind::KimiGrep);
             plan.register_handler("WriteFile", ToolHandlerKind::KimiWriteFile);

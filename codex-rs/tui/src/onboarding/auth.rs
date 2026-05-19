@@ -432,6 +432,19 @@ struct ProviderPickerModelHint {
     model: String,
 }
 
+fn openai_api_key_loading_state() -> LoadingProviderModelsState {
+    let preset = provider_presets()
+        .into_iter()
+        .find(|provider_preset| provider_preset.provider_id == "openai")
+        .expect("openai api key preset should exist");
+    LoadingProviderModelsState {
+        provider_id: preset.provider_id.to_string(),
+        provider_name: preset.title.to_string(),
+        manual_model_placeholder: preset.model_placeholder.to_string(),
+        default_manual_model: preset.default_model.unwrap_or_default(),
+    }
+}
+
 impl AuthModeWidget {
     pub(crate) fn set_animations_suppressed(&self, suppressed: bool) {
         self.animations_suppressed.set(suppressed);
@@ -2536,16 +2549,7 @@ impl AuthModeWidget {
         let sign_in_state = self.sign_in_state.clone();
         let error = self.error.clone();
         let request_frame = self.request_frame.clone();
-        let preset = provider_presets()
-            .into_iter()
-            .find(|provider_preset| provider_preset.provider_id == "openai")
-            .expect("openai preset should exist");
-        let loading_state = LoadingProviderModelsState {
-            provider_id: preset.provider_id.to_string(),
-            provider_name: preset.title.to_string(),
-            manual_model_placeholder: preset.model_placeholder.to_string(),
-            default_manual_model: preset.default_model.unwrap_or_default(),
-        };
+        let loading_state = openai_api_key_loading_state();
         tokio::spawn(async move {
             match request_handle
                 .request_typed::<LoginAccountResponse>(ClientRequest::LoginAccount {
@@ -3019,7 +3023,6 @@ mod tests {
     use codex_arg0::Arg0DispatchPaths;
     use codex_cloud_requirements::cloud_requirements_loader_for_storage;
     use codex_config::types::AuthCredentialsStoreMode;
-    use codex_exec_server::EnvironmentManager;
 
     use codex_protocol::openai_models::ModelPreset;
     use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -3170,6 +3173,14 @@ mod tests {
             SignInState::PickMode
         ));
         assert_eq!(widget.login_status, LoginStatus::NotAuthenticated);
+    }
+
+    #[test]
+    fn api_key_login_loads_openai_api_key_provider_models() {
+        let loading_state = openai_api_key_loading_state();
+
+        assert_eq!(loading_state.provider_id, "openai");
+        assert_eq!(loading_state.provider_name, "OpenAI (ChatGPT sign-in)");
     }
 
     #[tokio::test]
@@ -3465,13 +3476,15 @@ mod tests {
     fn provider_setup_renders_openrouter_snapshot() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         let (widget, _tmp) = runtime.block_on(widget_open_interpreter());
-        let state = ProviderSetupState::new(
+        let mut state = ProviderSetupState::new(
             provider_presets()
                 .into_iter()
                 .find(|preset| preset.provider_id == "openrouter")
                 .expect("openrouter preset"),
         )
         .expect("openrouter setup");
+        state.api_key.clear();
+        state.api_key_prefilled_from_env = false;
 
         let mut terminal =
             Terminal::new(VT100Backend::new(/*width*/ 96, /*height*/ 20)).expect("terminal");

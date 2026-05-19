@@ -423,6 +423,9 @@ async fn process_anthropic_event(
                 .error
                 .and_then(|error| error.message)
                 .unwrap_or_else(|| "Anthropic stream error".to_string());
+            if is_anthropic_context_window_error(&message) {
+                return Err(ApiError::ContextWindowExceeded);
+            }
             return Err(ApiError::Stream(message));
         }
         "ping" => {}
@@ -432,6 +435,13 @@ async fn process_anthropic_event(
     }
 
     Ok(false)
+}
+
+fn is_anthropic_context_window_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("prompt is too long")
+        || message.contains("context window")
+        || message.contains("context length")
 }
 
 fn update_usage(state: &mut AnthropicStreamState, usage: Option<&AnthropicUsage>) {
@@ -515,6 +525,17 @@ mod tests {
             }
         }
         events
+    }
+
+    #[tokio::test]
+    async fn prompt_too_long_error_maps_to_context_window() {
+        let events = collect_events(&[
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 2067654 tokens > 1000000 maximum\"}}\n\n",
+        ])
+        .await;
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Err(ApiError::ContextWindowExceeded)));
     }
 
     #[tokio::test]
@@ -797,8 +818,13 @@ data: {"type":"message_stop"   }
                 assert_eq!(name, "Edit");
                 assert_eq!(call_id, "toolu_01UwwxuyuKZjWYfuNKTXP4wn");
                 assert_eq!(
-                    arguments,
-                    "{\"file_path\":\"/tmp/claude-core-gauntlet-run-v6/tui-core-tool-gauntlet/workspace/gauntlet.txt\",\"new_string\":\"TOKEN_NEW\",\"old_string\":\"TOKEN_OLD\",\"replace_all\":true}"
+                    serde_json::from_str::<serde_json::Value>(arguments).expect("arguments json"),
+                    serde_json::json!({
+                        "file_path": "/tmp/claude-core-gauntlet-run-v6/tui-core-tool-gauntlet/workspace/gauntlet.txt",
+                        "new_string": "TOKEN_NEW",
+                        "old_string": "TOKEN_OLD",
+                        "replace_all": true,
+                    })
                 );
             }
             other => panic!("expected function call output item done event, got {other:?}"),

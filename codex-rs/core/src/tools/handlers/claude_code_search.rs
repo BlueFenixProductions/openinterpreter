@@ -6,6 +6,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::handlers::claude_code::effective_turn_file_system_policy;
 use crate::tools::handlers::claude_code::ensure_readable_path;
 use crate::tools::handlers::claude_code::parse_absolute_path;
+use crate::tools::handlers::claude_code_output::format_claude_glob_results;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
@@ -43,6 +44,8 @@ struct ClaudeGrepArgs {
     line_numbers: Option<bool>,
     #[serde(rename = "-i")]
     case_insensitive: Option<bool>,
+    #[serde(rename = "-o")]
+    only_matching: Option<bool>,
     #[serde(rename = "type")]
     file_type: Option<String>,
     head_limit: Option<usize>,
@@ -50,7 +53,7 @@ struct ClaudeGrepArgs {
     multiline: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ClaudeGrepOutputMode {
     Content,
@@ -79,6 +82,7 @@ impl ToolHandler for ClaudeGlobHandler {
         };
 
         let args: ClaudeGlobArgs = parse_arguments(&arguments)?;
+        let has_explicit_path = args.path.is_some();
         let search_root =
             resolve_search_root(session.as_ref(), turn.as_ref(), args.path.as_deref()).await?;
         if !search_root.as_path().is_dir() {
@@ -104,11 +108,21 @@ impl ToolHandler for ClaudeGlobHandler {
             .map(|path| canonicalize_rg_path(search_root.as_path(), Path::new(&path)))
             .collect::<Result<Vec<_>, _>>()?;
         paths.sort_by(compare_paths_by_modified_desc);
-        let output = paths
+        let output_paths = paths
             .into_iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|path| {
+                if has_explicit_path {
+                    path.display().to_string()
+                } else {
+                    path.as_path()
+                        .strip_prefix(search_root.as_path())
+                        .unwrap_or(path.as_path())
+                        .display()
+                        .to_string()
+                }
+            })
+            .collect::<Vec<_>>();
+        let output = format_claude_glob_results(output_paths);
         Ok(FunctionToolOutput::from_text(output, Some(true)))
     }
 }
@@ -145,7 +159,7 @@ impl ToolHandler for ClaudeGrepHandler {
         let output_mode = args
             .output_mode
             .unwrap_or(ClaudeGrepOutputMode::FilesWithMatches);
-        match output_mode {
+        match &output_mode {
             ClaudeGrepOutputMode::Content => {
                 if args.line_numbers.unwrap_or(true) {
                     rg_args.push("--line-number".to_string());
@@ -175,6 +189,9 @@ impl ToolHandler for ClaudeGrepHandler {
         if args.case_insensitive.unwrap_or(false) {
             rg_args.push("--ignore-case".to_string());
         }
+        if args.only_matching.unwrap_or(false) && output_mode == ClaudeGrepOutputMode::Content {
+            rg_args.push("--only-matching".to_string());
+        }
         if let Some(glob) = args.glob {
             rg_args.push("--glob".to_string());
             rg_args.push(glob);
@@ -195,10 +212,20 @@ impl ToolHandler for ClaudeGrepHandler {
         let lines = String::from_utf8_lossy(&output.stdout)
             .lines()
             .skip(args.offset.unwrap_or(0))
-            .take(args.head_limit.unwrap_or(CLAUDE_GREP_DEFAULT_HEAD_LIMIT))
+            .take(grep_output_limit(&output_mode, args.head_limit))
             .collect::<Vec<_>>()
             .join("\n");
         Ok(FunctionToolOutput::from_text(lines, Some(true)))
+    }
+}
+
+fn grep_output_limit(output_mode: &ClaudeGrepOutputMode, head_limit: Option<usize>) -> usize {
+    match (output_mode, head_limit) {
+        (_, Some(limit)) => limit,
+        (ClaudeGrepOutputMode::Content, None) => CLAUDE_GREP_DEFAULT_HEAD_LIMIT,
+        (ClaudeGrepOutputMode::FilesWithMatches | ClaudeGrepOutputMode::Count, None) => {
+            CLAUDE_GREP_DEFAULT_HEAD_LIMIT
+        }
     }
 }
 

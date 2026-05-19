@@ -524,6 +524,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
+        reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
         shell_type: ConfigShellToolType::UnifiedExec,
         visibility: ModelVisibility::List,
         supported_in_api: true,
@@ -552,14 +553,6 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         experimental_supported_tools: Vec::new(),
     };
 
-    let models_mock = mount_models_once(
-        &server,
-        ModelsResponse {
-            models: vec![remote_model],
-        },
-    )
-    .await;
-
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
@@ -573,11 +566,27 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         ..
     } = builder.build(&server).await?;
 
+    let models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![remote_model],
+        },
+    )
+    .await;
     let models_manager = thread_manager.get_models_manager();
-    let available_model = wait_for_model_available(&models_manager, REMOTE_MODEL_SLUG).await;
-
-    assert_eq!(available_model.model, REMOTE_MODEL_SLUG);
-
+    let available_models = models_manager.list_models(RefreshStrategy::Online).await;
+    assert!(
+        available_models
+            .iter()
+            .any(|model| model.model == REMOTE_MODEL_SLUG),
+        "remote model should be loaded from the mocked /models response; requests={}; models={:?}",
+        models_mock.requests().len(),
+        available_models
+            .iter()
+            .map(|model| model.model.as_str())
+            .take(8)
+            .collect::<Vec<_>>()
+    );
     let requests = models_mock.requests();
     assert_eq!(
         requests.len(),
@@ -777,6 +786,7 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
+        reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
         shell_type: ConfigShellToolType::ShellCommand,
         visibility: ModelVisibility::List,
         supported_in_api: true,
@@ -804,14 +814,6 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
     };
-    mount_models_once(
-        &server,
-        ModelsResponse {
-            models: vec![remote_model],
-        },
-    )
-    .await;
-
     let response_mock = mount_sse_once(
         &server,
         sse(vec![
@@ -835,8 +837,30 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
         ..
     } = builder.build(&server).await?;
 
+    let models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![remote_model],
+        },
+    )
+    .await;
     let models_manager = thread_manager.get_models_manager();
-    wait_for_model_available(&models_manager, model).await;
+    let available_models = models_manager.list_models(RefreshStrategy::Online).await;
+    assert!(
+        available_models.iter().any(|preset| preset.model == model),
+        "remote model should be loaded from the mocked /models response; requests={}; models={:?}",
+        models_mock.requests().len(),
+        available_models
+            .iter()
+            .map(|preset| preset.model.as_str())
+            .take(8)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        models_mock.requests().len(),
+        1,
+        "expected a single /models refresh request for remote base instructions"
+    );
 
     codex
         .submit(Op::OverrideTurnContext {
@@ -1264,6 +1288,7 @@ fn test_remote_model_with_policy(
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
+        reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
         shell_type: ConfigShellToolType::ShellCommand,
         visibility,
         supported_in_api: true,

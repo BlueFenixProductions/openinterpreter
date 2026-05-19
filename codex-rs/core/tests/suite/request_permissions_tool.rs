@@ -16,7 +16,9 @@ use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use core_test_support::responses::ev_apply_patch_function_call;
+use core_test_support::responses::ResponseMock;
+use core_test_support::responses::ResponsesRequest;
+use core_test_support::responses::ev_apply_patch_call;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -26,6 +28,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_sandbox;
+use core_test_support::test_codex::ApplyPatchModelOutput;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -35,6 +38,8 @@ use serde_json::Value;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
+use std::time::Instant;
 
 fn absolute_path(path: &Path) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(path).expect("absolute path")
@@ -126,6 +131,47 @@ fn parse_result(item: &Value) -> (Option<i64>, String) {
                 (None, output_str.to_string())
             }
         }
+    }
+}
+
+fn custom_tool_call_output_text(request: &ResponsesRequest, call_id: &str) -> Option<String> {
+    request.input().iter().find_map(|item| {
+        if item.get("type").and_then(Value::as_str) != Some("custom_tool_call_output")
+            || item.get("call_id").and_then(Value::as_str) != Some(call_id)
+        {
+            return None;
+        }
+
+        match item.get("output")? {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(items) => match items.as_slice() {
+                [item] if item.get("type").and_then(Value::as_str) == Some("input_text") => {
+                    item.get("text").and_then(Value::as_str).map(str::to_string)
+                }
+                [_] | [] | [_, _, ..] => None,
+            },
+            Value::Object(_) | Value::Number(_) | Value::Bool(_) | Value::Null => None,
+        }
+    })
+}
+
+async fn wait_for_custom_tool_call_output_text(
+    responses: &ResponseMock,
+    call_id: &str,
+) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(output) = responses
+            .requests()
+            .into_iter()
+            .find_map(|request| custom_tool_call_output_text(&request, call_id))
+        {
+            return Some(output);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -321,6 +367,17 @@ async fn approved_folder_write_request_permissions_unblocks_later_apply_patch() 
     skip_if_sandbox!(Ok(()));
 
     apply_patch_after_request_permissions(/*strict_auto_review*/ false).await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[cfg(target_os = "macos")]
+async fn approved_folder_write_request_permissions_unblocks_later_apply_patch_with_strict_review()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
     apply_patch_after_request_permissions(/*strict_auto_review*/ true).await?;
 
     Ok(())
@@ -380,25 +437,33 @@ async fn apply_patch_after_request_permissions(strict_auto_review: bool) -> Resu
         ]),
         sse(vec![
             ev_response_created(&format!("{response_prefix}-2")),
-            ev_apply_patch_function_call("apply-patch-call", &patch),
+            ev_apply_patch_call("apply-patch-call", &patch, ApplyPatchModelOutput::Freeform),
             ev_completed(&format!("{response_prefix}-2")),
         ]),
     ];
     if strict_auto_review {
-        sse_sequence.push(sse(vec![
-            ev_response_created(&format!("{response_prefix}-guardian")),
-            ev_assistant_message(
-                "msg-strict-request-permissions-patch-guardian",
-                &serde_json::json!({
-                    "risk_level": "low",
-                    "user_authorization": "high",
-                    "outcome": "allow",
-                    "rationale": "The patch stays within the strict turn grant.",
-                })
-                .to_string(),
-            ),
-            ev_completed(&format!("{response_prefix}-guardian")),
-        ]));
+        for guardian_review_index in 1..=2 {
+            sse_sequence.push(sse(vec![
+                ev_response_created(&format!(
+                    "{response_prefix}-guardian-{guardian_review_index}"
+                )),
+                ev_assistant_message(
+                    &format!(
+                        "msg-strict-request-permissions-patch-guardian-{guardian_review_index}"
+                    ),
+                    &serde_json::json!({
+                        "risk_level": "low",
+                        "user_authorization": "high",
+                        "outcome": "allow",
+                        "rationale": "The patch stays within the strict turn grant.",
+                    })
+                    .to_string(),
+                ),
+                ev_completed(&format!(
+                    "{response_prefix}-guardian-{guardian_review_index}"
+                )),
+            ]));
+        }
     }
     sse_sequence.push(sse(vec![
         ev_response_created(&format!("{response_prefix}-3")),
@@ -461,10 +526,15 @@ async fn apply_patch_after_request_permissions(strict_auto_review: bool) -> Resu
         }
     }
 
-    let patch_output = responses
-        .function_call_output_text("apply-patch-call")
-        .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected apply-patch-call output"));
+    let patch_output_text =
+        if let Some(output) = responses.function_call_output_text("apply-patch-call") {
+            output
+        } else {
+            wait_for_custom_tool_call_output_text(&responses, "apply-patch-call")
+                .await
+                .unwrap_or_else(|| panic!("expected apply-patch-call output"))
+        };
+    let patch_output = json!({ "output": patch_output_text });
     let (exit_code, stdout) = parse_result(&patch_output);
     assert!(exit_code.is_none() || exit_code == Some(0));
     assert!(

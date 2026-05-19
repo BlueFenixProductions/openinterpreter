@@ -348,17 +348,14 @@ impl ToolsConfig {
 }
 
 fn parse_tool_name_filter_env(name: &str) -> Option<BTreeSet<String>> {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .and_then(|values| normalize_tool_name_filter(Some(values)))
+    std::env::var(name).ok().map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>()
+    })
 }
 
 fn normalize_tool_name_filter(filter: Option<Vec<String>>) -> Option<BTreeSet<String>> {

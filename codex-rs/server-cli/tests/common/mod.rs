@@ -162,12 +162,12 @@ fn codex_bin_name() -> &'static str {
 fn exec_bin_name() -> &'static str {
     #[cfg(windows)]
     {
-        "codex-exec.exe"
+        "interpreter-exec.exe"
     }
 
     #[cfg(not(windows))]
     {
-        "codex-exec"
+        "interpreter-exec"
     }
 }
 

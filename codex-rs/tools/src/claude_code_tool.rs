@@ -227,6 +227,13 @@ pub fn create_claude_code_grep_tool() -> ToolSpec {
                     JsonSchema::boolean(Some("Case insensitive search (rg -i)".to_string())),
                 ),
                 (
+                    "-o".to_string(),
+                    JsonSchema::boolean(Some(
+                        "Print only the matched (non-empty) parts of each matching line, one match per output line (rg -o / --only-matching). Requires output_mode: \"content\", ignored otherwise. Defaults to false."
+                            .to_string(),
+                    )),
+                ),
+                (
                     "type".to_string(),
                     JsonSchema::string(Some(
                         "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types."

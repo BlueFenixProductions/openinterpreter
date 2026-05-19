@@ -45,6 +45,11 @@ If you are invited by a Codex team member to contribute a PR, here is the recomm
 
 When a change updates model catalogs or model metadata (`/models` payloads, presets, or fixtures):
 
+- Regenerate `codex-rs/model-provider-info/provider_catalog.json` with
+  `python3 codex-rs/scripts/write_provider_catalog.py`. The generator combines
+  `models.dev` with required live provider sources from
+  `codex-rs/model-provider-info/provider_catalog_overrides.json`; set the
+  listed API key environment variables before running it.
 - Set `input_modalities` explicitly for any model that does not support images.
 - Keep compatibility defaults in mind: omitted `input_modalities` currently implies text + image support.
 - Ensure client surfaces that accept images (for example, TUI paste/attach) consume the same capability signal.

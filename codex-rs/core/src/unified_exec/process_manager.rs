@@ -872,28 +872,26 @@ impl UnifiedExecProcessManager {
                 &inherited_fds,
             )
             .await
+        } else if preserve_on_shutdown {
+            codex_utils_pty::pipe::spawn_persistent_process_no_stdin_with_inherited_fds(
+                program,
+                args,
+                request.cwd.as_path(),
+                &request.env,
+                &request.arg0,
+                &inherited_fds,
+            )
+            .await
         } else {
-            if preserve_on_shutdown {
-                codex_utils_pty::pipe::spawn_persistent_process_no_stdin_with_inherited_fds(
-                    program,
-                    args,
-                    request.cwd.as_path(),
-                    &request.env,
-                    &request.arg0,
-                    &inherited_fds,
-                )
-                .await
-            } else {
-                codex_utils_pty::pipe::spawn_process_no_stdin_with_inherited_fds(
-                    program,
-                    args,
-                    request.cwd.as_path(),
-                    &request.env,
-                    &request.arg0,
-                    &inherited_fds,
-                )
-                .await
-            }
+            codex_utils_pty::pipe::spawn_process_no_stdin_with_inherited_fds(
+                program,
+                args,
+                request.cwd.as_path(),
+                &request.env,
+                &request.arg0,
+                &inherited_fds,
+            )
+            .await
         };
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;

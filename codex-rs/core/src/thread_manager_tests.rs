@@ -6,7 +6,8 @@ use crate::session::tests::make_session_and_context;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
 use codex_features::Feature;
-use codex_model_provider_info::built_in_model_providers;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::models::ContentItem;
@@ -314,11 +315,25 @@ async fn start_thread_uses_models_manager_for_thread_provider_config() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
 
-    let providers = built_in_model_providers(/*openai_base_url*/ None);
-    let anthropic_provider = providers
-        .get("anthropic")
-        .expect("built-in Anthropic provider")
-        .clone();
+    let anthropic_provider = ModelProviderInfo {
+        name: "Anthropic".to_string(),
+        base_url: Some("https://api.anthropic.com".to_string()),
+        env_key: Some("ANTHROPIC_API_KEY".to_string()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Messages,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
     let mut thread_config = initial_config;
     thread_config.model_provider_id = "anthropic".to_string();
     thread_config.model_provider = anthropic_provider.clone();

@@ -6975,7 +6975,7 @@ impl ChatWidget {
                             .into_iter()
                             .map(Into::into)
                             .collect(),
-                        success: success.unwrap_or_else(|| {
+                        success: success.unwrap_or({
                             matches!(
                                 status,
                                 codex_app_server_protocol::DynamicToolCallStatus::Completed

@@ -983,6 +983,9 @@ async fn detect_repo_filters_plugins_against_installed_marketplace() {
     fs::write(
         codex_home.join("config.toml"),
         r#"
+[features]
+plugins = true
+
 [marketplaces.debug]
 source_type = "git"
 source = "owner/debug-marketplace"

@@ -11,6 +11,7 @@ use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ReasoningControl;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -19,7 +20,6 @@ use codex_tools::ToolSpec;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
-use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -31,6 +31,7 @@ const KIMI_CLI_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("kimi_cli_prompt.md")
 const KIMI_LIST_DIR_ROOT_WIDTH: usize = 30;
 const KIMI_LIST_DIR_CHILD_WIDTH: usize = 10;
 const KIMI_AGENTS_MD_MAX_BYTES: usize = 32 * 1024;
+const KIMI_CLI_NON_INTERACTIVE_REMINDER: &str = "<system-reminder>\nYou are running in non-interactive mode. The user cannot answer questions or provide feedback during execution.\n- Do NOT call AskUserQuestion. If you need to make a decision, make your best judgment and proceed.\n- For EnterPlanMode / ExitPlanMode, they will be auto-approved. You can use them normally but expect no user feedback.\n</system-reminder>";
 static KIMI_WORK_DIR_LS_CACHE: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
@@ -48,6 +49,9 @@ pub(crate) fn build_request(
         "content": system_prompt,
     })];
     messages.extend(build_messages(&prompt.get_formatted_input())?);
+    if matches!(session_source, Some(SessionSource::Exec)) {
+        append_non_interactive_reminder(&mut messages);
+    }
     let tools = build_tools(&prompt.tools, yolo_mode)?;
     let tool_kinds = prompt
         .tools
@@ -59,21 +63,19 @@ pub(crate) fn build_request(
             "model": model_info.slug,
             "messages": messages,
             "max_tokens": KIMI_CLI_DEFAULT_MAX_TOKENS,
-            "prompt_cache_key": std::env::var("OPEN_INTERPRETER_KIMI_PROMPT_CACHE_KEY_OVERRIDE")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| conversation_id.to_string()),
-            "reasoning_effort": Value::Null,
+            "prompt_cache_key": conversation_id,
             "stream": true,
             "stream_options": {
                 "include_usage": true,
             },
-            "thinking": {
-                "type": "disabled",
-            },
             "tools": tools,
     });
-    apply_reasoning_effort(&mut request, reasoning_effort);
+    if model_info.reasoning_control == ReasoningControl::ThinkingToggle {
+        request["thinking"] = json!({
+            "type": "disabled",
+        });
+        apply_reasoning_effort(&mut request, reasoning_effort);
+    }
 
     Ok((request, tool_kinds))
 }
@@ -156,20 +158,23 @@ fn build_system_prompt(
         rendered.push_str("\n\n# Additional Developer Instructions\n\n");
         rendered.push_str(&developer_instructions);
     }
-    if let Some(extra_instruction) = leading_extra_instruction(&prompt.base_instructions.text) {
-        rendered.push_str("\n\n");
-        rendered.push_str(extra_instruction);
-    }
     rendered
 }
 
-fn leading_extra_instruction(text: &str) -> Option<&str> {
-    let text = text.trim_start();
-    if !text.starts_with("<extra_instruction>") {
-        return None;
-    }
-    let end = text.find("</extra_instruction>")? + "</extra_instruction>".len();
-    Some(&text[..end])
+fn append_non_interactive_reminder(messages: &mut [Value]) {
+    let Some(Value::Object(message)) = messages
+        .iter_mut()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+    else {
+        return;
+    };
+    let Some(Value::Array(content)) = message.get_mut("content") else {
+        return;
+    };
+    content.push(json!({
+        "type": "text",
+        "text": KIMI_CLI_NON_INTERACTIVE_REMINDER,
+    }));
 }
 
 fn cached_work_dir_listing(conversation_id: &str, work_dir: &Path) -> String {
@@ -189,6 +194,7 @@ pub(super) fn build_messages(
     let mut messages = Vec::new();
     let mut pending_tool_calls = Vec::new();
     let mut awaiting_tool_call_ids = Vec::new();
+    let mut pending_assistant_content = None;
     let mut pending_reasoning_content = String::new();
 
     for item in items {
@@ -200,18 +206,17 @@ pub(super) fn build_messages(
                             continue;
                         }
                         if !pending_tool_calls.is_empty() {
-                            flush_pending_tool_calls_with_content(
-                                &mut messages,
-                                &mut pending_tool_calls,
-                                &mut awaiting_tool_call_ids,
-                                &mut pending_reasoning_content,
-                                message_content,
-                            );
+                            pending_assistant_content = Some(message_content);
                             continue;
                         }
                         discard_unanswered_tool_calls(
                             &mut pending_tool_calls,
                             &mut awaiting_tool_call_ids,
+                            &mut pending_reasoning_content,
+                        );
+                        push_pending_assistant_content(
+                            &mut messages,
+                            &mut pending_assistant_content,
                             &mut pending_reasoning_content,
                         );
                         let mut message = json!({
@@ -233,6 +238,11 @@ pub(super) fn build_messages(
                         &mut awaiting_tool_call_ids,
                         &mut pending_reasoning_content,
                     );
+                    push_pending_assistant_content(
+                        &mut messages,
+                        &mut pending_assistant_content,
+                        &mut pending_reasoning_content,
+                    );
                     pending_reasoning_content.clear();
                     let parts = convert_user_message_parts(content);
                     if !parts.is_empty() {
@@ -248,6 +258,11 @@ pub(super) fn build_messages(
                         &mut awaiting_tool_call_ids,
                         &mut pending_reasoning_content,
                     );
+                    push_pending_assistant_content(
+                        &mut messages,
+                        &mut pending_assistant_content,
+                        &mut pending_reasoning_content,
+                    );
                     pending_reasoning_content.clear();
                 }
                 _ => {}
@@ -258,6 +273,11 @@ pub(super) fn build_messages(
                 call_id,
                 ..
             } => {
+                push_pending_assistant_content(
+                    &mut messages,
+                    &mut pending_assistant_content,
+                    &mut pending_reasoning_content,
+                );
                 awaiting_tool_call_ids.clear();
                 pending_tool_calls.push(json!({
                     "type": "function",
@@ -274,6 +294,11 @@ pub(super) fn build_messages(
                 input,
                 ..
             } => {
+                push_pending_assistant_content(
+                    &mut messages,
+                    &mut pending_assistant_content,
+                    &mut pending_reasoning_content,
+                );
                 awaiting_tool_call_ids.clear();
                 pending_tool_calls.push(json!({
                     "type": "function",
@@ -290,6 +315,11 @@ pub(super) fn build_messages(
                 action,
                 ..
             } => {
+                push_pending_assistant_content(
+                    &mut messages,
+                    &mut pending_assistant_content,
+                    &mut pending_reasoning_content,
+                );
                 let call_id = call_id.clone().or_else(|| id.clone()).ok_or_else(|| {
                     serde_json::Error::io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -318,6 +348,7 @@ pub(super) fn build_messages(
                     &mut messages,
                     &mut pending_tool_calls,
                     &mut awaiting_tool_call_ids,
+                    &mut pending_assistant_content,
                     &mut pending_reasoning_content,
                     call_id,
                     kimi_tool_output_content(output),
@@ -330,6 +361,7 @@ pub(super) fn build_messages(
                     &mut messages,
                     &mut pending_tool_calls,
                     &mut awaiting_tool_call_ids,
+                    &mut pending_assistant_content,
                     &mut pending_reasoning_content,
                     call_id,
                     kimi_tool_output_content(output),
@@ -348,6 +380,11 @@ pub(super) fn build_messages(
         }
     }
 
+    push_pending_assistant_content(
+        &mut messages,
+        &mut pending_assistant_content,
+        &mut pending_reasoning_content,
+    );
     discard_unanswered_tool_calls(
         &mut pending_tool_calls,
         &mut awaiting_tool_call_ids,
@@ -445,20 +482,47 @@ fn discard_unanswered_tool_calls(
     pending_reasoning_content.clear();
 }
 
+fn push_pending_assistant_content(
+    messages: &mut Vec<Value>,
+    pending_assistant_content: &mut Option<Value>,
+    pending_reasoning_content: &mut String,
+) {
+    let Some(content) = pending_assistant_content.take() else {
+        return;
+    };
+    let mut message = json!({
+        "role": "assistant",
+        "content": content,
+    });
+    attach_reasoning_content(&mut message, pending_reasoning_content);
+    messages.push(message);
+}
+
 fn push_tool_output_if_expected(
     messages: &mut Vec<Value>,
     pending_tool_calls: &mut Vec<Value>,
     awaiting_tool_call_ids: &mut Vec<String>,
+    pending_assistant_content: &mut Option<Value>,
     pending_reasoning_content: &mut String,
     call_id: &str,
     content: Value,
 ) {
-    flush_pending_tool_calls(
-        messages,
-        pending_tool_calls,
-        awaiting_tool_call_ids,
-        pending_reasoning_content,
-    );
+    if let Some(content) = pending_assistant_content.take() {
+        flush_pending_tool_calls_with_content(
+            messages,
+            pending_tool_calls,
+            awaiting_tool_call_ids,
+            pending_reasoning_content,
+            content,
+        );
+    } else {
+        flush_pending_tool_calls(
+            messages,
+            pending_tool_calls,
+            awaiting_tool_call_ids,
+            pending_reasoning_content,
+        );
+    }
     if let Some(index) = awaiting_tool_call_ids
         .iter()
         .position(|awaiting_call_id| awaiting_call_id == call_id)
@@ -566,7 +630,8 @@ fn kimi_tool_output_content(output: &FunctionCallOutputPayload) -> Value {
                 }
                 return json!(format!("<system>ERROR: {text}</system>"));
             }
-            json!(safe_kimi_tool_text(text))
+            let text = safe_kimi_tool_text(text);
+            json!(text)
         }
         codex_protocol::models::FunctionCallOutputBody::ContentItems(items) => {
             let content = items
@@ -581,6 +646,8 @@ fn kimi_tool_output_content(output: &FunctionCallOutputPayload) -> Value {
 fn safe_kimi_tool_text(text: &str) -> String {
     if text.trim().is_empty() {
         "<system>Tool output is empty.</system>".to_string()
+    } else if text.contains('\0') {
+        "<system>Tool returned non-text content.</system>".to_string()
     } else {
         text.to_string()
     }
@@ -873,8 +940,10 @@ fn parse_kimi_skill_frontmatter(text: &str) -> Option<(String, String)> {
         .map(|(frontmatter, _)| frontmatter)?;
     let mut name = None;
     let mut description = None;
-    for line in frontmatter.lines() {
-        let trimmed = line.trim();
+    let lines = frontmatter.lines().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
         if let Some(value) = trimmed.strip_prefix("name:") {
             name = Some(
                 value
@@ -884,14 +953,25 @@ fn parse_kimi_skill_frontmatter(text: &str) -> Option<(String, String)> {
                     .to_string(),
             );
         } else if let Some(value) = trimmed.strip_prefix("description:") {
-            description = Some(
-                value
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string(),
-            );
+            let value = value.trim();
+            if matches!(value, "|" | "|-" | "|+") {
+                let mut block_lines = Vec::new();
+                index += 1;
+                while index < lines.len() {
+                    let line = lines[index];
+                    if !line.starts_with(' ') && !line.starts_with('\t') {
+                        index -= 1;
+                        break;
+                    }
+                    block_lines.push(line.trim().to_string());
+                    index += 1;
+                }
+                description = Some(block_lines.join("\n"));
+            } else {
+                description = Some(value.trim_matches('"').trim_matches('\'').to_string());
+            }
         }
+        index += 1;
     }
     Some((name?, description?))
 }
@@ -937,12 +1017,7 @@ fn render_conditional_block(
 }
 
 fn current_kimi_now() -> String {
-    env::var("OPEN_INTERPRETER_KIMI_NOW_OVERRIDE")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
-        })
+    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
 }
 
 fn list_directory(work_dir: &Path) -> String {
@@ -1020,7 +1095,7 @@ mod tests {
     use super::build_messages;
     use super::build_request;
     use super::build_system_prompt;
-    use super::discover_kimi_skills;
+    use super::builtin_kimi_skill_listing;
     use super::discover_skills_in_root;
     use super::kimi_skill_roots;
     use super::load_kimi_agents_md;
@@ -1033,6 +1108,7 @@ mod tests {
     use codex_protocol::models::ReasoningItemContent;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::openai_models::ModelInfo;
+    use codex_protocol::openai_models::ReasoningControl;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_tools::JsonSchema;
     use codex_tools::ResponsesApiTool;
@@ -1074,7 +1150,19 @@ mod tests {
     #[test]
     fn kimi_builtin_skills_are_rendered_when_source_tree_is_unavailable() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let listing = discover_kimi_skills(temp.path());
+        let found_skills = kimi_skill_roots(
+            temp.path(),
+            /*home_dir*/ None,
+            /*kimi_source_dir*/ None,
+        )
+        .into_iter()
+        .flat_map(|root| discover_skills_in_root(&root))
+        .any(|_| true);
+        let listing = if found_skills {
+            unreachable!("empty temp fixture should not discover skills")
+        } else {
+            builtin_kimi_skill_listing().to_string()
+        };
 
         assert_eq!(
             listing,
@@ -1206,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_system_prompt_appends_leading_extra_instruction() {
+    fn kimi_system_prompt_omits_open_interpreter_extra_instruction() {
         let prompt = Prompt {
             base_instructions: BaseInstructions {
                 text: "<extra_instruction>\nUse file tools first.\n</extra_instruction>\n\nCodex base prompt"
@@ -1219,7 +1307,7 @@ mod tests {
         let system_prompt = build_system_prompt(&prompt, None, "conversation-id");
 
         assert!(
-            system_prompt
+            !system_prompt
                 .contains("<extra_instruction>\nUse file tools first.\n</extra_instruction>")
         );
         assert!(!system_prompt.contains("Codex base prompt"));
@@ -1287,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_request_maps_reasoning_effort_to_thinking() {
+    fn kimi_request_omits_reasoning_fields_when_model_has_no_reasoning_control() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
                 id: Some("user".to_string()),
@@ -1305,6 +1393,38 @@ mod tests {
         let (request, _) = build_request(
             &prompt,
             &test_model_info(),
+            Some(ReasoningEffort::High),
+            "conversation-id",
+            None,
+            /*yolo_mode*/ false,
+        )
+        .expect("build request");
+
+        assert_eq!(request.get("reasoning_effort"), None);
+        assert_eq!(request.get("thinking"), None);
+    }
+
+    #[test]
+    fn kimi_request_maps_thinking_toggle_model_reasoning_effort_to_thinking() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: Some("user".to_string()),
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "think".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            }],
+            cwd: Some(std::env::temp_dir()),
+            ..Prompt::default()
+        };
+        let mut model_info = test_model_info();
+        model_info.reasoning_control = ReasoningControl::ThinkingToggle;
+
+        let (request, _) = build_request(
+            &prompt,
+            &model_info,
             Some(ReasoningEffort::High),
             "conversation-id",
             None,
@@ -1362,18 +1482,24 @@ mod tests {
         )
         .expect("build request");
 
+        let messages = request["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert!(
+            !messages[0]["content"]
+                .as_str()
+                .expect("system content")
+                .contains("AskUserQuestion")
+        );
         assert_eq!(
-            request.get("messages"),
-            Some(&json!([{
-                "role": "system",
-                "content": build_system_prompt(&prompt, None, "conversation-id"),
-            }, {
+            messages[1],
+            json!({
                 "role": "user",
                 "content": [{
                     "type": "text",
                     "text": "do the task",
                 }],
-            }]))
+            })
         );
         let tool_names = request["tools"]
             .as_array()
@@ -1485,12 +1611,7 @@ mod tests {
                 }),
                 json!({
                     "role": "tool",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "<system>Command executed successfully.</system>",
-                        },
-                    ],
+                    "content": "<system>Command executed successfully.</system>",
                     "tool_call_id": "Shell:0",
                 }),
             ]
@@ -1611,12 +1732,7 @@ mod tests {
                 }),
                 json!({
                     "role": "tool",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "<system>ERROR: Command failed with exit code: 1.</system>",
-                        },
-                    ],
+                    "content": "<system>ERROR: Command failed with exit code: 1.</system>",
                     "tool_call_id": "Shell:1",
                 }),
             ]
@@ -1924,6 +2040,28 @@ Body
             Some((
                 "demo-guide".to_string(),
                 "Read the demo creation workflow guide".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn kimi_skill_parser_reads_block_description() {
+        let text = r#"---
+name: apply-to-ramp
+description: |-
+  Guide a user through submitting a Ramp financing application via the CLI.
+  Use when: "apply to ramp", "create application", "sign up for ramp",
+  "submit a ramp application", "onboard a new business".
+---
+
+Body
+"#;
+
+        assert_eq!(
+            parse_kimi_skill_frontmatter(text),
+            Some((
+                "apply-to-ramp".to_string(),
+                "Guide a user through submitting a Ramp financing application via the CLI.\nUse when: \"apply to ramp\", \"create application\", \"sign up for ramp\",\n\"submit a ramp application\", \"onboard a new business\".".to_string(),
             ))
         );
     }

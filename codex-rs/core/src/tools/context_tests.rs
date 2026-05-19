@@ -100,6 +100,7 @@ fn mcp_tool_output_response_item_includes_wall_time() {
         },
         tool_input: json!({}),
         wall_time: std::time::Duration::from_millis(1250),
+        supports_image_input: false,
         original_image_detail_supported: false,
     };
 
@@ -153,6 +154,7 @@ fn mcp_tool_output_response_item_preserves_content_items() {
         },
         tool_input: json!({}),
         wall_time: std::time::Duration::from_millis(500),
+        supports_image_input: true,
         original_image_detail_supported: false,
     };
 
@@ -207,6 +209,7 @@ fn mcp_tool_output_code_mode_result_stays_raw_call_tool_result() {
         },
         tool_input: json!({}),
         wall_time: std::time::Duration::from_millis(1250),
+        supports_image_input: true,
         original_image_detail_supported: false,
     };
 
@@ -293,7 +296,7 @@ fn tool_search_payloads_roundtrip_as_tool_search_outputs() {
             strict: false,
             defer_loading: Some(true),
             parameters: codex_tools::JsonSchema::object(
-                /*properties*/ Default::default(),
+                /*properties*/ Vec::new(),
                 /*required*/ None,
                 /*additional_properties*/ None,
             ),

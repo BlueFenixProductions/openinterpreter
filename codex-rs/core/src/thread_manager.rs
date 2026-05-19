@@ -63,6 +63,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -272,6 +273,12 @@ fn sanitize_provider_id(provider_id: &str) -> String {
         .collect()
 }
 
+fn provider_cache_home_for_tests(codex_home: &Path, provider_name: &str) -> PathBuf {
+    codex_home
+        .join("models-cache")
+        .join(sanitize_provider_id(&provider_name.to_lowercase()))
+}
+
 fn configured_thread_store(config: &Config) -> Arc<dyn ThreadStore> {
     match &config.experimental_thread_store {
         ThreadStoreConfig::Local => {
@@ -385,9 +392,9 @@ impl ThreadManager {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
-                models_manager: create_model_provider(provider, Some(auth_manager.clone()))
+                models_manager: create_model_provider(provider.clone(), Some(auth_manager.clone()))
                     .models_manager(
-                        codex_home,
+                        provider_cache_home_for_tests(&codex_home, provider.name.as_str()),
                         /*config_model_catalog*/ None,
                         CollaborationModesConfig::default(),
                     ),

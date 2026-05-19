@@ -5,6 +5,9 @@ use crate::cli::LaunchOptions;
 use crate::cli::ResumeCommand;
 use crate::cli::ServerCli;
 use crate::cli::Subcommand;
+use crate::cli::UpdateCommand;
+use crate::cli::UpdateSubcommand;
+use crate::cli::apply_mcp_root_overrides;
 use crate::cli::apply_root_overrides;
 use crate::cli::daemon_startup_overrides;
 use crate::cli::finalize_fork_interactive;
@@ -113,7 +116,54 @@ pub async fn run_main(cli: ServerCli, arg0_paths: Arg0DispatchPaths) -> anyhow::
             ensure_daemon_command_uses_local_daemon(&launch)?;
             kill_daemon(kill).await
         }
+        Some(Subcommand::Mcp(mcp_cli)) => {
+            ensure_daemon_command_uses_local_daemon(&launch)?;
+            apply_mcp_root_overrides(mcp_cli, root_config_overrides)
+                .with_binary_name("interpreter")
+                .run()
+                .await
+        }
+        Some(Subcommand::Update(update)) => run_update_command(update),
     }
+}
+
+fn run_update_command(update: UpdateCommand) -> anyhow::Result<()> {
+    match update.subcommand.unwrap_or(UpdateSubcommand::Status) {
+        UpdateSubcommand::Status => {
+            println!(
+                "Standalone updates are managed by the installer. Run `interpreter update now` to reinstall the latest release."
+            );
+        }
+        UpdateSubcommand::Now => {
+            let (program, args): (&str, &[&str]) = if cfg!(windows) {
+                (
+                    "powershell",
+                    &["-c", "irm https://openinterpreter.com/install.ps1|iex"],
+                )
+            } else {
+                (
+                    "sh",
+                    &[
+                        "-c",
+                        "curl -fsSL https://openinterpreter.com/install.sh | sh",
+                    ],
+                )
+            };
+            let status = std::process::Command::new(program).args(args).status()?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        UpdateSubcommand::On => {
+            println!(
+                "Automatic update checks are configured from the interactive TUI with `/update-on`."
+            );
+        }
+        UpdateSubcommand::Off => {
+            println!(
+                "Automatic update checks are configured from the interactive TUI with `/update-off`."
+            );
+        }
+    }
+    Ok(())
 }
 
 fn apply_default_alt_screen(

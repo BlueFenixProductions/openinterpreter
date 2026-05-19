@@ -31,7 +31,7 @@ use codex_utils_cli::format_env_display;
 /// Subcommands:
 /// - `list`   — list configured servers (with `--json`)
 /// - `get`    — show a single server (with `--json`)
-/// - `add`    — add a server launcher entry to `~/.codex/config.toml`
+/// - `add`    — add a server launcher entry to the active CLI home `config.toml`
 /// - `remove` — delete a server entry
 /// - `login`  — authenticate with MCP server using OAuth
 /// - `logout` — remove OAuth credentials for MCP server
@@ -42,6 +42,9 @@ pub struct McpCli {
 
     #[command(subcommand)]
     pub subcommand: McpSubcommand,
+
+    #[clap(skip = "interpreter")]
+    pub binary_name: &'static str,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -72,9 +75,9 @@ pub struct GetArgs {
 }
 
 #[derive(Debug, clap::Parser)]
-#[command(override_usage = "codex mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)")]
 pub struct AddArgs {
     /// Name for the MCP server configuration.
+    #[arg(index = 1)]
     pub name: String,
 
     #[command(flatten)]
@@ -86,7 +89,6 @@ pub struct AddArgs {
     group(
         ArgGroup::new("transport")
             .args(["command", "url"])
-            .required(true)
             .multiple(false)
     )
 )]
@@ -103,9 +105,10 @@ pub struct AddMcpStdioArgs {
     /// Command to launch the MCP server.
     /// Use --url for a streamable HTTP server.
     #[arg(
-            trailing_var_arg = true,
-            num_args = 0..,
-        )]
+        index = 2,
+        trailing_var_arg = true,
+        num_args = 0..,
+    )]
     pub command: Vec<String>,
 
     /// Environment variables to set when launching the server.
@@ -157,21 +160,27 @@ pub struct LogoutArgs {
 }
 
 impl McpCli {
+    pub fn with_binary_name(mut self, binary_name: &'static str) -> Self {
+        self.binary_name = binary_name;
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         let McpCli {
             config_overrides,
             subcommand,
+            binary_name,
         } = self;
 
         match subcommand {
             McpSubcommand::List(args) => {
-                run_list(&config_overrides, args).await?;
+                run_list(binary_name, &config_overrides, args).await?;
             }
             McpSubcommand::Get(args) => {
-                run_get(&config_overrides, args).await?;
+                run_get(binary_name, &config_overrides, args).await?;
             }
             McpSubcommand::Add(args) => {
-                run_add(&config_overrides, args).await?;
+                run_add(binary_name, &config_overrides, args).await?;
             }
             McpSubcommand::Remove(args) => {
                 run_remove(&config_overrides, args).await?;
@@ -236,7 +245,11 @@ async fn perform_oauth_login_retry_without_scopes(
     }
 }
 
-async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Result<()> {
+async fn run_add(
+    binary_name: &str,
+    config_overrides: &CliConfigOverrides,
+    add_args: AddArgs,
+) -> Result<()> {
     // Validate any provided overrides even though they are not currently applied.
     let overrides = config_overrides
         .parse_overrides()
@@ -347,7 +360,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         }
         McpOAuthLoginSupport::Unsupported => {}
         McpOAuthLoginSupport::Unknown(_) => println!(
-            "MCP server may or may not require login. Run `codex mcp login {name}` to login."
+            "MCP server may or may not require login. Run `{binary_name} mcp login {name}` to login."
         ),
     }
 
@@ -472,7 +485,11 @@ async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutAr
     Ok(())
 }
 
-async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Result<()> {
+async fn run_list(
+    binary_name: &str,
+    config_overrides: &CliConfigOverrides,
+    list_args: ListArgs,
+) -> Result<()> {
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -553,7 +570,9 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     }
 
     if entries.is_empty() {
-        println!("No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.");
+        println!(
+            "No MCP servers configured yet. Try `{binary_name} mcp add my-tool -- my-command`."
+        );
         return Ok(());
     }
 
@@ -727,7 +746,11 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     Ok(())
 }
 
-async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<()> {
+async fn run_get(
+    binary_name: &str,
+    config_overrides: &CliConfigOverrides,
+    get_args: GetArgs,
+) -> Result<()> {
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -893,7 +916,7 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
         };
         println!("  default_tools_approval_mode: {approval_mode}");
     }
-    println!("  remove: codex mcp remove {}", get_args.name);
+    println!("  remove: {binary_name} mcp remove {}", get_args.name);
 
     Ok(())
 }

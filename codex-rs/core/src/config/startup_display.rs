@@ -536,7 +536,7 @@ model = "gpt-5-mini"
         let config = build_startup_display_config(
             cfg,
             ConfigOverrides::default(),
-            codex_home.path().to_path_buf(),
+            AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("absolute codex home"),
         )
         .expect("build startup display config");
 
@@ -563,8 +563,12 @@ model = "gpt-5-mini"
         };
 
         let codex_home = TempDir::new().expect("create temp dir");
-        let config = build_startup_display_config(cfg, overrides, codex_home.path().to_path_buf())
-            .expect("build startup display config");
+        let config = build_startup_display_config(
+            cfg,
+            overrides,
+            AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("absolute codex home"),
+        )
+        .expect("build startup display config");
 
         assert_eq!(
             config.active_project,

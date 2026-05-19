@@ -154,6 +154,7 @@ impl ToolHandler for KimiShellHandler {
             hook_command: codex_shell_command::parse_command::shlex_join(&exec_params.command),
             cwd: exec_params.cwd.clone(),
             timeout_ms,
+            capture_policy: exec_params.capture_policy,
             env: exec_params.env.clone(),
             explicit_env_overrides: turn.shell_environment_policy.r#set.clone(),
             network: exec_params.network.clone(),

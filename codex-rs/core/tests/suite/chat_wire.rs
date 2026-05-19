@@ -59,6 +59,7 @@ fn chat_provider(server: &MockServer) -> ModelProviderInfo {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Chat,
         query_params: None,
         http_headers: None,
@@ -70,12 +71,6 @@ fn chat_provider(server: &MockServer) -> ModelProviderInfo {
         requires_openai_auth: false,
         supports_websockets: false,
     }
-}
-
-fn openai_chat_provider(server: &MockServer) -> ModelProviderInfo {
-    let mut provider = chat_provider(server);
-    provider.name = "OpenAI".into();
-    provider
 }
 
 fn chat_completion_requests(
@@ -207,6 +202,7 @@ async fn chat_wire_turn_uses_chat_completions_endpoint() -> Result<()> {
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "route me through chat completions".into(),
                 text_elements: Vec::new(),
@@ -216,6 +212,7 @@ async fn chat_wire_turn_uses_chat_completions_endpoint() -> Result<()> {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
             model: model.clone(),
             effort: config.model_reasoning_effort,
             summary: None,
@@ -279,6 +276,7 @@ async fn chat_wire_keeps_provider_routing_session_scoped() -> Result<()> {
         .with_config({
             let provider = chat_provider(&server_a);
             move |config| {
+                config.model = Some(NON_CODEX_CHAT_MODEL.to_string());
                 config.model_provider = provider;
             }
         })
@@ -288,6 +286,7 @@ async fn chat_wire_keeps_provider_routing_session_scoped() -> Result<()> {
         .with_config({
             let provider = chat_provider(&server_b);
             move |config| {
+                config.model = Some(NON_CODEX_CHAT_MODEL.to_string());
                 config.model_provider = provider;
             }
         })
@@ -322,7 +321,7 @@ async fn chat_wire_manual_compact_uses_local_prompt_and_preserves_summary() -> R
 
     let test = test_codex()
         .with_config({
-            let provider = openai_chat_provider(&server);
+            let provider = chat_provider(&server);
             move |config| {
                 config.model = Some(NON_CODEX_CHAT_MODEL.to_string());
                 config.model_provider = provider;
@@ -406,7 +405,7 @@ async fn chat_wire_auto_compact_uses_local_prompt_and_preserves_summary() -> Res
 
     let test = test_codex()
         .with_config({
-            let provider = openai_chat_provider(&server);
+            let provider = chat_provider(&server);
             move |config| {
                 config.model = Some(NON_CODEX_CHAT_MODEL.to_string());
                 config.model_provider = provider;
@@ -503,7 +502,14 @@ async fn chat_wire_shell_timeout_round_trips_tool_output() -> Result<()> {
     )
     .await?;
 
-    let requests = server.received_requests().await.unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let requests = loop {
+        let requests = server.received_requests().await.unwrap_or_default();
+        if chat_completion_requests(&requests).count() >= 2 || Instant::now() >= deadline {
+            break requests;
+        }
+        sleep(Duration::from_millis(50)).await;
+    };
     let chat_requests: Vec<_> = chat_completion_requests(&requests).collect();
     assert_eq!(chat_requests.len(), 2);
 

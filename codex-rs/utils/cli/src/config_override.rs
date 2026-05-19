@@ -1,4 +1,4 @@
-//! Support for `-c key=value` overrides shared across Codex CLI tools.
+//! Support for `-c key=value` overrides shared across CLI tools.
 //!
 //! This module provides a [`CliConfigOverrides`] struct that can be embedded
 //! into a `clap`-derived CLI struct using `#[clap(flatten)]`. Each occurrence
@@ -19,7 +19,7 @@ use toml::Value;
 pub struct CliConfigOverrides {
     /// Override a configuration value that would otherwise be loaded from
     /// the active CLI home `config.toml` (for example
-    /// `~/.codex/config.toml` or `~/.openinterpreter/config.toml`). Use a
+    /// `~/.openinterpreter/config.toml`). Use a
     /// dotted path (`foo.bar.baz`) to override nested values. The `value`
     /// portion is parsed as TOML. If it fails to parse as TOML, the raw
     /// string is used as a literal.
@@ -35,7 +35,7 @@ pub struct CliConfigOverrides {
         action = ArgAction::Append,
         global = true,
         help = "Override a configuration value loaded from the active CLI home config.toml",
-        long_help = "Override a configuration value that would otherwise be loaded from the active CLI home `config.toml` (for example `~/.codex/config.toml` or `~/.openinterpreter/config.toml`). Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n\nExamples:\n  - `-c model=\"o3\"`\n  - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'`\n  - `-c shell_environment_policy.inherit=all`",
+        long_help = "Override a configuration value that would otherwise be loaded from the active CLI home `config.toml` (for example `~/.openinterpreter/config.toml`). Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed as TOML. If it fails to parse as TOML, the raw string is used as a literal.\n\nExamples:\n  - `-c model=\"o3\"`\n  - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'`\n  - `-c shell_environment_policy.inherit=all`",
     )]
     pub raw_overrides: Vec<String>,
 }

@@ -215,8 +215,8 @@ async fn command_exec_accepts_permission_profile() -> Result<()> {
     let command_request_id = mcp
         .send_command_exec_request(CommandExecParams {
             command: vec![
-                "sh".to_string(),
-                "-lc".to_string(),
+                "/bin/sh".to_string(),
+                "-c".to_string(),
                 "printf 'profile'".to_string(),
             ],
             process_id: None,

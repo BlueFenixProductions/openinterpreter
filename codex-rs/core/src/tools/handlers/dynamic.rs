@@ -7,9 +7,11 @@ use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_tools::ToolName;
@@ -63,8 +65,26 @@ impl ToolHandler for DynamicToolHandler {
             content_items,
             success,
         } = response;
+        let model_info = session
+            .services
+            .models_manager
+            .get_model_info(
+                turn.collaboration_mode.model(),
+                &turn.config.to_models_manager_config(),
+            )
+            .await;
+        let supports_image_input = model_info.input_modalities.contains(&InputModality::Image);
         let body = content_items
             .into_iter()
+            .map(|item| match item {
+                DynamicToolCallOutputContentItem::InputImage { .. } if !supports_image_input => {
+                    DynamicToolCallOutputContentItem::InputText {
+                        text: "<image content omitted because you do not support image input>"
+                            .to_string(),
+                    }
+                }
+                item => item,
+            })
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
         Ok(FunctionToolOutput::from_content(body, Some(success)))

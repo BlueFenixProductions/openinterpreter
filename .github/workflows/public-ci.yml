@@ -30,6 +30,9 @@ jobs:
           grep -q 'KillianLucas/oix' scripts/install/install.ps1
           grep -q 'open-interpreter' scripts/install/install.sh
           grep -q 'open-interpreter' scripts/install/install.ps1
+          grep -q 'interpreter-exec' scripts/install/install.sh
+          grep -q 'interpreter-exec.exe' scripts/install/install.ps1
+          grep -q 'interpreter-exec' scripts/build-interpreter-release.sh
 
       - name: Validate release workflow shape
         run: |

@@ -1113,6 +1113,7 @@ async fn load_workspace_permission_profile(
         },
         codex_home.abs().to_path_buf(),
     )
+    .await
 }
 
 #[tokio::test]
@@ -2170,8 +2171,7 @@ async fn cli_override_takes_precedence_over_profile_sandbox_mode() -> std::io::R
     };
 
     let config =
-        Config::load_from_base_config_with_overrides_async(cfg, overrides, codex_home.abs())
-            .await?;
+        Config::load_from_base_config_with_overrides(cfg, overrides, codex_home.abs()).await?;
 
     if cfg!(target_os = "windows") {
         assert!(matches!(
@@ -3734,8 +3734,7 @@ async fn loads_compact_prompt_from_file() -> std::io::Result<()> {
     };
 
     let config =
-        Config::load_from_base_config_with_overrides_async(cfg, overrides, codex_home.abs())
-            .await?;
+        Config::load_from_base_config_with_overrides(cfg, overrides, codex_home.abs()).await?;
 
     assert_eq!(
         config.compact_prompt.as_deref(),
@@ -5216,6 +5215,7 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             harness: None,
+            harness_guidance: true,
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::Never),
                 sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -5236,10 +5236,7 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             cwd: fixture.cwd(),
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),
-            mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
-                Default::default(),
-                LOCAL_DEV_BUILD_VERSION,
-            ),
+            mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::Auto,
             mcp_oauth_callback_port: None,
             mcp_oauth_callback_url: None,
             model_providers: fixture.model_provider_map.clone(),
@@ -5413,6 +5410,7 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         model_provider_id: "openai-custom".to_string(),
         model_provider: fixture.openai_custom_provider.clone(),
         harness: None,
+        harness_guidance: true,
         permissions: Permissions {
             approval_policy: Constrained::allow_any(AskForApproval::UnlessTrusted),
             sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -5433,10 +5431,7 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         cwd: fixture.cwd(),
         cli_auth_credentials_store_mode: Default::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
-        mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
-            Default::default(),
-            LOCAL_DEV_BUILD_VERSION,
-        ),
+        mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::Auto,
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         model_providers: fixture.model_provider_map.clone(),
@@ -5564,6 +5559,7 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),
         harness: None,
+        harness_guidance: true,
         permissions: Permissions {
             approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
             sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -5584,10 +5580,7 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         cwd: fixture.cwd(),
         cli_auth_credentials_store_mode: Default::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
-        mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
-            Default::default(),
-            LOCAL_DEV_BUILD_VERSION,
-        ),
+        mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::Auto,
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         model_providers: fixture.model_provider_map.clone(),
@@ -5700,6 +5693,7 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),
         harness: None,
+        harness_guidance: true,
         permissions: Permissions {
             approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
             sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -5720,10 +5714,7 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         cwd: fixture.cwd(),
         cli_auth_credentials_store_mode: Default::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
-        mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
-            Default::default(),
-            LOCAL_DEV_BUILD_VERSION,
-        ),
+        mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::Auto,
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         model_providers: fixture.model_provider_map.clone(),
@@ -5812,8 +5803,8 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
     Ok(())
 }
 
-#[test]
-fn anthropic_like_provider_defaults_to_claude_code_harness() -> std::io::Result<()> {
+#[tokio::test]
+async fn anthropic_like_provider_defaults_to_claude_code_harness() -> std::io::Result<()> {
     let cwd_temp_dir = TempDir::new().expect("temp dir");
     std::fs::write(cwd_temp_dir.path().join(".git"), "gitdir: nowhere")?;
     let codex_home_temp_dir = TempDir::new().expect("temp dir");
@@ -5829,6 +5820,7 @@ fn anthropic_like_provider_defaults_to_claude_code_harness() -> std::io::Result<
                 env_key_instructions: None,
                 experimental_bearer_token: None,
                 auth: None,
+                aws: None,
                 wire_api: WireApi::Messages,
                 query_params: None,
                 http_headers: None,
@@ -5851,14 +5843,15 @@ fn anthropic_like_provider_defaults_to_claude_code_harness() -> std::io::Result<
             ..Default::default()
         },
         codex_home_temp_dir.path().to_path_buf(),
-    )?;
+    )
+    .await?;
 
     assert_eq!(config.harness.as_deref(), Some("claude-code"));
     Ok(())
 }
 
-#[test]
-fn kimi_like_provider_defaults_to_kimi_cli_harness() -> std::io::Result<()> {
+#[tokio::test]
+async fn kimi_like_provider_defaults_to_kimi_cli_harness() -> std::io::Result<()> {
     let cwd_temp_dir = TempDir::new().expect("temp dir");
     std::fs::write(cwd_temp_dir.path().join(".git"), "gitdir: nowhere")?;
     let codex_home_temp_dir = TempDir::new().expect("temp dir");
@@ -5874,6 +5867,7 @@ fn kimi_like_provider_defaults_to_kimi_cli_harness() -> std::io::Result<()> {
                 env_key_instructions: None,
                 experimental_bearer_token: None,
                 auth: None,
+                aws: None,
                 wire_api: WireApi::Chat,
                 query_params: None,
                 http_headers: None,
@@ -5896,14 +5890,15 @@ fn kimi_like_provider_defaults_to_kimi_cli_harness() -> std::io::Result<()> {
             ..Default::default()
         },
         codex_home_temp_dir.path().to_path_buf(),
-    )?;
+    )
+    .await?;
 
     assert_eq!(config.harness.as_deref(), Some("kimi-cli"));
     Ok(())
 }
 
-#[test]
-fn openrouter_model_family_defaults_to_matching_harness() -> std::io::Result<()> {
+#[tokio::test]
+async fn openrouter_model_family_defaults_to_matching_harness() -> std::io::Result<()> {
     let cases = [
         ("qwen/qwen3.6-plus", Some("qwen-code")),
         ("moonshotai/kimi-k2.5", Some("kimi-cli")),
@@ -5928,6 +5923,7 @@ fn openrouter_model_family_defaults_to_matching_harness() -> std::io::Result<()>
                     env_key_instructions: None,
                     experimental_bearer_token: None,
                     auth: None,
+                    aws: None,
                     wire_api: WireApi::Chat,
                     query_params: None,
                     http_headers: None,
@@ -5950,7 +5946,8 @@ fn openrouter_model_family_defaults_to_matching_harness() -> std::io::Result<()>
                 ..Default::default()
             },
             codex_home_temp_dir.path().to_path_buf(),
-        )?;
+        )
+        .await?;
 
         assert_eq!(config.harness.as_deref(), expected_harness, "{model}");
     }
@@ -5958,8 +5955,8 @@ fn openrouter_model_family_defaults_to_matching_harness() -> std::io::Result<()>
     Ok(())
 }
 
-#[test]
-fn deepseek_provider_defaults_to_minimal_harness() -> std::io::Result<()> {
+#[tokio::test]
+async fn deepseek_provider_defaults_to_minimal_harness() -> std::io::Result<()> {
     let cwd_temp_dir = TempDir::new().expect("temp dir");
     std::fs::write(cwd_temp_dir.path().join(".git"), "gitdir: nowhere")?;
     let codex_home_temp_dir = TempDir::new().expect("temp dir");
@@ -5975,6 +5972,7 @@ fn deepseek_provider_defaults_to_minimal_harness() -> std::io::Result<()> {
                 env_key_instructions: None,
                 experimental_bearer_token: None,
                 auth: None,
+                aws: None,
                 wire_api: WireApi::Chat,
                 query_params: None,
                 http_headers: None,
@@ -5997,14 +5995,15 @@ fn deepseek_provider_defaults_to_minimal_harness() -> std::io::Result<()> {
             ..Default::default()
         },
         codex_home_temp_dir.path().to_path_buf(),
-    )?;
+    )
+    .await?;
 
     assert_eq!(config.harness.as_deref(), Some("minimal"));
     Ok(())
 }
 
-#[test]
-fn profile_harness_overrides_provider_default_harness() -> std::io::Result<()> {
+#[tokio::test]
+async fn profile_harness_overrides_provider_default_harness() -> std::io::Result<()> {
     let cwd_temp_dir = TempDir::new().expect("temp dir");
     std::fs::write(cwd_temp_dir.path().join(".git"), "gitdir: nowhere")?;
     let codex_home_temp_dir = TempDir::new().expect("temp dir");
@@ -6028,6 +6027,7 @@ fn profile_harness_overrides_provider_default_harness() -> std::io::Result<()> {
                 env_key_instructions: None,
                 experimental_bearer_token: None,
                 auth: None,
+                aws: None,
                 wire_api: WireApi::Messages,
                 query_params: None,
                 http_headers: None,
@@ -6050,7 +6050,8 @@ fn profile_harness_overrides_provider_default_harness() -> std::io::Result<()> {
             ..Default::default()
         },
         codex_home_temp_dir.path().to_path_buf(),
-    )?;
+    )
+    .await?;
 
     assert_eq!(config.harness.as_deref(), Some("gemini-cli"));
     Ok(())

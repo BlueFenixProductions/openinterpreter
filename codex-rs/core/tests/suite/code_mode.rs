@@ -1773,10 +1773,6 @@ text({ json: true });
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
-    eprintln!(
-        "hidden dynamic tool raw output: {}",
-        req.custom_tool_call_output("call-1")
-    );
     assert_ne!(
         success,
         Some(false),

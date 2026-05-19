@@ -105,9 +105,12 @@ pub fn models_manager_with_provider(
     auth_manager: Arc<AuthManager>,
     provider: ModelProviderInfo,
 ) -> SharedModelsManager {
+    let cache_home = codex_home
+        .join("models-cache")
+        .join(provider.name.to_lowercase());
     let provider = create_model_provider(provider, Some(auth_manager));
     provider.models_manager(
-        codex_home,
+        cache_home,
         /*config_model_catalog*/ None,
         Default::default(),
     )

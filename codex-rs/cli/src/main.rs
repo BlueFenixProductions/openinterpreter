@@ -42,15 +42,14 @@ mod app_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod marketplace_cmd;
-mod mcp_cmd;
 mod responses_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
 use crate::marketplace_cmd::MarketplaceCli;
-use crate::mcp_cmd::McpCli;
 use crate::responses_cmd::ResponsesCommand;
 use crate::responses_cmd::run_responses_command;
+use codex_cli::mcp_cmd::McpCli;
 
 use codex_core::build_models_manager;
 use codex_core::clear_memory_roots_contents;

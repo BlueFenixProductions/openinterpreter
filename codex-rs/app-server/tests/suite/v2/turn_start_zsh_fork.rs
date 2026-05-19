@@ -639,28 +639,55 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2()
     assert_eq!(approved_subcommand_strings.len(), 2);
     assert!(approved_subcommand_strings[0].contains(&first_file.display().to_string()));
     assert!(approved_subcommand_strings[1].contains(&second_file.display().to_string()));
-    let parent_completed_command_execution = timeout(DEFAULT_READ_TIMEOUT, async {
+    enum CompletionObservation {
+        Parent(ThreadItem),
+        Turn(TurnCompletedNotification),
+    }
+    let completion_observation = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let completed_notif = mcp
-                .read_stream_until_notification_message("item/completed")
+                .read_stream_until_matching_notification(
+                    "parent command completion or turn completion",
+                    |notification| {
+                        notification.method == "item/completed"
+                            || notification.method == "turn/completed"
+                    },
+                )
                 .await?;
-            let completed: ItemCompletedNotification = serde_json::from_value(
-                completed_notif
-                    .params
-                    .clone()
-                    .expect("item/completed params"),
-            )?;
-            if let ThreadItem::CommandExecution { id, .. } = &completed.item
-                && id == "call-zsh-fork-subcommand-decline"
-            {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            match completed_notif.method.as_str() {
+                "item/completed" => {
+                    let completed: ItemCompletedNotification = serde_json::from_value(
+                        completed_notif
+                            .params
+                            .clone()
+                            .expect("item/completed params"),
+                    )?;
+                    if let ThreadItem::CommandExecution { id, .. } = &completed.item
+                        && id == "call-zsh-fork-subcommand-decline"
+                    {
+                        return Ok::<CompletionObservation, anyhow::Error>(
+                            CompletionObservation::Parent(completed.item),
+                        );
+                    }
+                }
+                "turn/completed" => {
+                    let completed: TurnCompletedNotification = serde_json::from_value(
+                        completed_notif
+                            .params
+                            .expect("turn/completed params must be present"),
+                    )?;
+                    return Ok::<CompletionObservation, anyhow::Error>(
+                        CompletionObservation::Turn(completed),
+                    );
+                }
+                _ => unreachable!("predicate only accepts item/completed or turn/completed"),
             }
         }
     })
     .await;
 
-    match parent_completed_command_execution {
-        Ok(Ok(parent_completed_command_execution)) => {
+    match completion_observation {
+        Ok(Ok(CompletionObservation::Parent(parent_completed_command_execution))) => {
             let ThreadItem::CommandExecution {
                 id,
                 status,
@@ -709,6 +736,14 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2()
                     .await?;
                 }
             }
+        }
+        Ok(Ok(CompletionObservation::Turn(completed))) => {
+            assert_eq!(completed.thread_id, thread.id);
+            assert_eq!(completed.turn.id, turn.id);
+            assert!(matches!(
+                completed.turn.status,
+                TurnStatus::Interrupted | TurnStatus::Completed
+            ));
         }
         Ok(Err(error)) => return Err(error),
         Err(_) => {

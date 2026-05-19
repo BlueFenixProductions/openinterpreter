@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::SkillInjections;
 use crate::SkillLoadOutcome;
@@ -1843,20 +1844,68 @@ async fn drain_in_flight(
     turn_context: Arc<TurnContext>,
 ) -> CodexResult<()> {
     let futures = std::mem::take(in_flight);
+    if turn_context.tools_config.harness.is_claude_code() {
+        let mut unordered = futures
+            .into_iter()
+            .map(|tool_future| {
+                let handle = tokio::spawn(async move {
+                    let res = tool_future.await;
+                    (Instant::now(), res)
+                });
+                async move {
+                    let (completed_at, res) = handle.await?;
+                    Ok::<_, CodexErr>((completed_at, res))
+                }
+            })
+            .collect::<futures::stream::FuturesUnordered<_>>();
+        let mut completed = Vec::new();
+        while let Some(res) = unordered.next().await {
+            match res {
+                Ok((completed_at, response_result)) => {
+                    completed.push((completed_at, response_result));
+                }
+                Err(err) => {
+                    error_or_panic(format!("in-flight tool future failed during drain: {err}"));
+                }
+            }
+        }
+        completed.sort_by_key(|(completed_at, _)| *completed_at);
+        for (_, res) in completed {
+            record_tool_response_result(res, sess.clone(), turn_context.clone()).await;
+        }
+        return Ok(());
+    }
+
+    if turn_context.tools_config.harness.is_kimi_cli() {
+        for tool_future in futures {
+            record_tool_response_result(tool_future.await, sess.clone(), turn_context.clone())
+                .await;
+        }
+        return Ok(());
+    }
+
     let mut ordered = futures
         .into_iter()
         .collect::<futures::stream::FuturesOrdered<_>>();
     while let Some(res) = ordered.next().await {
-        match res {
-            Ok(response_input) => {
-                record_tool_response(response_input, sess.clone(), turn_context.clone()).await;
-            }
-            Err(err) => {
-                error_or_panic(format!("in-flight tool future failed during drain: {err}"));
-            }
-        }
+        record_tool_response_result(res, sess.clone(), turn_context.clone()).await;
     }
     Ok(())
+}
+
+async fn record_tool_response_result(
+    res: CodexResult<ResponseInputItem>,
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+) {
+    match res {
+        Ok(response_input) => {
+            record_tool_response(response_input, sess, turn_context).await;
+        }
+        Err(err) => {
+            error_or_panic(format!("in-flight tool future failed during drain: {err}"));
+        }
+    }
 }
 
 async fn record_tool_response(

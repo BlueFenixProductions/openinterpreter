@@ -1250,10 +1250,33 @@ fn permission_profile_override_from_config(
 }
 
 fn config_request_overrides_from_config(config: &Config) -> Option<HashMap<String, Value>> {
-    config
-        .active_profile
-        .as_ref()
-        .map(|profile| HashMap::from([("profile".to_string(), Value::String(profile.clone()))]))
+    let mut overrides = HashMap::new();
+    if let Some(profile) = &config.active_profile {
+        overrides.insert("profile".to_string(), Value::String(profile.clone()));
+    }
+    if let Some(harness) = &config.harness {
+        overrides.insert("harness".to_string(), Value::String(harness.clone()));
+    }
+
+    let effective_config = config.config_layer_stack.effective_config();
+    if let Some(openai_base_url) = effective_config.get("openai_base_url")
+        && let Ok(value) = serde_json::to_value(openai_base_url)
+    {
+        overrides.insert("openai_base_url".to_string(), value);
+    }
+    if let Some(provider_config) = effective_config
+        .get("model_providers")
+        .and_then(|value| value.as_table())
+        .and_then(|providers| providers.get(&config.model_provider_id))
+        && let Ok(value) = serde_json::to_value(provider_config)
+    {
+        overrides.insert(
+            format!("model_providers.{}", config.model_provider_id),
+            value,
+        );
+    }
+
+    (!overrides.is_empty()).then_some(overrides)
 }
 
 fn approvals_reviewer_override_from_config(

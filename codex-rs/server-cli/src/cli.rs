@@ -6,6 +6,8 @@ pub use crate::cli_common::daemon_startup_overrides;
 use clap::Args;
 use clap::FromArgMatches;
 use clap::Parser;
+use clap::Subcommand as ClapSubcommand;
+use codex_cli::mcp_cmd::McpCli;
 use codex_tui::Cli as TuiCli;
 use codex_utils_cli::CliConfigOverrides;
 use std::ffi::OsString;
@@ -15,6 +17,7 @@ use std::ffi::OsString;
     name = "interpreter",
     about = "Open Interpreter app-server-backed TUI",
     version,
+    bin_name = "interpreter",
     subcommand_negates_reqs = true,
     override_usage = "interpreter [OPTIONS] [PROMPT]\n       interpreter [OPTIONS] <COMMAND> [ARGS]"
 )]
@@ -52,6 +55,33 @@ pub enum Subcommand {
 
     /// Stop the local Open Interpreter daemon.
     Kill(KillCommand),
+
+    /// Manage external MCP servers.
+    Mcp(McpCli),
+
+    /// Manage standalone Open Interpreter updates.
+    Update(UpdateCommand),
+}
+
+#[derive(Debug, Parser)]
+pub struct UpdateCommand {
+    #[command(subcommand)]
+    pub subcommand: Option<UpdateSubcommand>,
+}
+
+#[derive(Debug, ClapSubcommand)]
+pub enum UpdateSubcommand {
+    /// Show update status.
+    Status,
+
+    /// Run the standalone installer update now.
+    Now,
+
+    /// Enable automatic update checks.
+    On,
+
+    /// Disable automatic update checks.
+    Off,
 }
 
 #[derive(Args, Debug)]
@@ -169,6 +199,14 @@ pub fn apply_root_overrides(
 ) -> TuiCli {
     prepend_config_flags(&mut interactive.config_overrides, root_config_overrides);
     interactive
+}
+
+pub fn apply_mcp_root_overrides(
+    mut mcp_cli: McpCli,
+    root_config_overrides: CliConfigOverrides,
+) -> McpCli {
+    prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides);
+    mcp_cli
 }
 
 pub fn finalize_resume_interactive(
@@ -466,5 +504,36 @@ mod tests {
             panic!("expected kill subcommand");
         };
         assert_eq!(kill, KillCommand { force: true });
+    }
+
+    #[test]
+    fn mcp_subcommand_parses() {
+        let cli = ServerCli::parse_from(["interpreter", "mcp", "list"]);
+
+        let Some(Subcommand::Mcp(mcp_cli)) = cli.subcommand else {
+            panic!("expected mcp subcommand");
+        };
+        assert_eq!(mcp_cli.binary_name, "interpreter");
+    }
+
+    #[test]
+    fn mcp_subcommand_merges_root_config_overrides() {
+        let cli = ServerCli::parse_from(["interpreter", "mcp", "-c", "profile=\"work\"", "list"]);
+
+        let Some(Subcommand::Mcp(mcp_cli)) = cli.subcommand else {
+            panic!("expected mcp subcommand");
+        };
+        let config_overrides = CliConfigOverrides {
+            raw_overrides: vec!["model=\"gpt-5.4\"".to_string()],
+        };
+        let mcp_cli = apply_mcp_root_overrides(mcp_cli, config_overrides);
+
+        assert_eq!(
+            mcp_cli.config_overrides.raw_overrides,
+            vec![
+                "model=\"gpt-5.4\"".to_string(),
+                "profile=\"work\"".to_string(),
+            ]
+        );
     }
 }

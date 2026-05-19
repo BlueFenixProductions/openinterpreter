@@ -535,6 +535,7 @@ impl ShellHandler {
             hook_command,
             cwd: exec_params.cwd.clone(),
             timeout_ms: exec_params.expiration.timeout_ms(),
+            capture_policy: exec_params.capture_policy,
             env: exec_params.env.clone(),
             explicit_env_overrides,
             network: exec_params.network.clone(),

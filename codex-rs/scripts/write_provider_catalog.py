@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -21,12 +23,13 @@ OVERRIDES_PATH = (
 )
 DEFAULT_SORT_PRIORITY = 100
 SUPPORTED_WIRE_APIS = {"chat", "messages", "responses"}
+USER_AGENT = "OpenInterpreter/1.0 (+https://github.com/KillianLucas/open-interpreter-next)"
 
 
 def load_models_dev_catalog() -> dict[str, dict]:
     request = urllib.request.Request(
         MODELS_DEV_URL,
-        headers={"User-Agent": "OpenInterpreter/1.0 (+https://github.com/KillianLucas/open-interpreter-next)"},
+        headers={"User-Agent": USER_AGENT},
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
@@ -136,6 +139,8 @@ def build_provider_entry(
                 "priority": priority,
             }
         )
+    merge_live_provider_models(provider_id, models, overrides)
+    apply_provider_model_overrides(provider_id, models, overrides)
 
     return {
         "id": provider_id,
@@ -146,6 +151,125 @@ def build_provider_entry(
         "sort_priority": int(sort_priorities.get(provider_id, DEFAULT_SORT_PRIORITY)),
         "models": models,
     }
+
+
+def merge_live_provider_models(
+    provider_id: str,
+    models: list[dict],
+    overrides: dict[str, object],
+) -> None:
+    live_sources = overrides.get("live_model_sources", {})
+    if not isinstance(live_sources, dict):
+        return
+    source = live_sources.get(provider_id)
+    if not isinstance(source, dict):
+        return
+    url = source.get("url")
+    if not isinstance(url, str) or not url:
+        raise SystemExit(f"live_model_sources.{provider_id}.url must be a string")
+
+    headers = {"User-Agent": USER_AGENT}
+    auth = source.get("auth")
+    if auth == "bearer":
+        auth_env = source.get("auth_env", [])
+        token = first_env_value(auth_env)
+        if token is None:
+            raise SystemExit(
+                f"live_model_sources.{provider_id} requires one of these env vars: "
+                f"{format_env_names(auth_env)}"
+            )
+        headers["Authorization"] = f"Bearer {token}"
+    elif auth is not None:
+        raise SystemExit(f"unsupported live model source auth for {provider_id}: {auth}")
+
+    try:
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        raise SystemExit(f"live_model_sources.{provider_id} failed: {exc}") from exc
+
+    existing = {model["id"] for model in models if isinstance(model.get("id"), str)}
+    next_priority = max(
+        (int(model.get("priority", -1)) for model in models),
+        default=-1,
+    ) + 1
+    live_ids = live_model_ids(payload)
+    if not live_ids:
+        raise SystemExit(f"live_model_sources.{provider_id} returned no models")
+    for model_id in live_ids:
+        if model_id in existing:
+            continue
+        models.append(default_live_model_entry(model_id, next_priority))
+        existing.add(model_id)
+        next_priority += 1
+
+
+def first_env_value(env_names: object) -> str | None:
+    if not isinstance(env_names, list):
+        raise SystemExit("live model source auth_env must be a list")
+    for env_name in env_names:
+        if not isinstance(env_name, str):
+            continue
+        value = os.environ.get(env_name)
+        if value:
+            return value
+    return None
+
+
+def format_env_names(env_names: object) -> str:
+    if not isinstance(env_names, list):
+        raise SystemExit("live model source auth_env must be a list")
+    values = [env_name for env_name in env_names if isinstance(env_name, str) and env_name]
+    return ", ".join(values) if values else "<none configured>"
+
+
+def live_model_ids(payload: object) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    values = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if isinstance(model_id, str) and model_id:
+            values.append(model_id)
+    return values
+
+
+def default_live_model_entry(model_id: str, priority: int) -> dict:
+    return {
+        "id": model_id,
+        "display_name": model_id.replace("-", " ").replace(".", ".").title(),
+        "description": "Live provider model",
+        "reasoning": False,
+        "input_modalities": ["text"],
+        "context_window": None,
+        "priority": priority,
+    }
+
+
+def apply_provider_model_overrides(
+    provider_id: str,
+    models: list[dict],
+    overrides: dict[str, object],
+) -> None:
+    provider_overrides = overrides.get("provider_model_metadata_overrides", {})
+    if not isinstance(provider_overrides, dict):
+        return
+    model_overrides = provider_overrides.get(provider_id)
+    if not isinstance(model_overrides, dict):
+        return
+    for model in models:
+        model_id = model.get("id")
+        if not isinstance(model_id, str):
+            continue
+        metadata = model_overrides.get(model_id)
+        if isinstance(metadata, dict):
+            model.update(metadata)
 
 
 def wire_api_for_provider(
@@ -219,12 +343,24 @@ def write_catalog() -> int:
     )
 
     payload = {
-        "generated_from": MODELS_DEV_URL,
+        "generated_from": generated_from(overrides),
         "providers": providers,
     }
     OUTPUT_PATH.write_text(json.dumps(payload, indent=2) + "\n")
     print(f"Wrote {len(providers)} provider entries to {OUTPUT_PATH}")
     return 0
+
+
+def generated_from(overrides: dict[str, object]) -> str | list[str]:
+    sources = [MODELS_DEV_URL]
+    live_sources = overrides.get("live_model_sources", {})
+    if isinstance(live_sources, dict):
+        for source in live_sources.values():
+            if isinstance(source, dict):
+                url = source.get("url")
+                if isinstance(url, str) and url:
+                    sources.append(url)
+    return sources[0] if len(sources) == 1 else sources
 
 
 if __name__ == "__main__":

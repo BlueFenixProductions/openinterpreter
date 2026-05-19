@@ -251,7 +251,7 @@ fn prompt_with_stdin_context_preserves_trailing_newline() {
 fn lagged_event_warning_message_is_explicit() {
     assert_eq!(
         lagged_event_warning_message(/*skipped*/ 7),
-        "app-server event stream lagged; dropped 7 events".to_string()
+        "in-process app-server event stream lagged; dropped 7 events".to_string()
     );
 }
 

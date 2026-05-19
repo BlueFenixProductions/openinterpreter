@@ -72,6 +72,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         .contains("The image data you provided does not represent a valid image")
                     {
                         CodexErr::InvalidImageRequest()
+                    } else if is_context_window_body(&body_text) {
+                        CodexErr::ContextWindowExceeded
                     } else {
                         CodexErr::InvalidRequest(body_text)
                     }
@@ -130,6 +132,13 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         },
         ApiError::RateLimit(msg) => CodexErr::Stream(msg, None),
     }
+}
+
+fn is_context_window_body(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    body.contains("prompt is too long")
+        || body.contains("context window")
+        || body.contains("context length")
 }
 
 const ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";

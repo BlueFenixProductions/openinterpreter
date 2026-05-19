@@ -368,6 +368,9 @@ fn strip_html(input: &str) -> String {
 
 fn normalize_text(input: &str) -> String {
     let mut text = whitespace_regex().replace_all(input, " ").into_owned();
+    text = punctuation_space_regex()
+        .replace_all(&text, "$1")
+        .into_owned();
     text = blank_line_regex().replace_all(&text, "\n\n").into_owned();
     text.lines()
         .map(str::trim)
@@ -425,6 +428,11 @@ fn tag_regex() -> &'static Regex {
 fn whitespace_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| Regex::new(r"[ \t\x0B\x0C\r]+").expect("valid whitespace regex"))
+}
+
+fn punctuation_space_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r" +([.,;:!?])").expect("valid punctuation whitespace regex"))
 }
 
 fn blank_line_regex() -> &'static Regex {

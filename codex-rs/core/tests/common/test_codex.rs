@@ -490,19 +490,22 @@ impl TestCodexBuilder {
         config.model_provider = model_provider;
         if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
             config.codex_self_exe = Some(path);
-        } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex-exec") {
-            // `codex-exec` also supports `--codex-run-as-apply-patch`, so use it
+        } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("interpreter-exec") {
+            // `interpreter-exec` also supports `--codex-run-as-apply-patch`, so use it
             // when the multitool binary is not available in test builds.
             config.codex_self_exe = Some(path);
         } else if let Ok(exe) = std::env::current_exe()
             && let Some(bin_dir) = exe.parent().and_then(|parent| parent.parent())
         {
             let codex = bin_dir.join("codex");
-            let codex_exec = bin_dir.join("codex-exec");
+            let interpreter_exec = bin_dir.join("interpreter-exec");
+            let legacy_codex_exec = bin_dir.join("codex-exec");
             if codex.is_file() {
                 config.codex_self_exe = Some(codex);
-            } else if codex_exec.is_file() {
-                config.codex_self_exe = Some(codex_exec);
+            } else if interpreter_exec.is_file() {
+                config.codex_self_exe = Some(interpreter_exec);
+            } else if legacy_codex_exec.is_file() {
+                config.codex_self_exe = Some(legacy_codex_exec);
             }
         }
 

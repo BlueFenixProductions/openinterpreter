@@ -4,39 +4,19 @@
 //! `codex-app-server-client::legacy_core`, which is only available on the
 //! in-process app-server path.
 
-#[cfg(not(feature = "thin-client"))]
-pub use codex_core::Cursor;
 pub use codex_core::DEFAULT_AGENTS_MD_FILENAME;
-#[cfg(not(feature = "thin-client"))]
-pub use codex_core::INTERACTIVE_SESSION_SOURCES;
 #[allow(unused_imports)]
 pub use codex_core::LOCAL_AGENTS_MD_FILENAME;
 #[cfg(not(feature = "cross-session-history"))]
 pub use codex_core::MessageHistoryEntry;
-#[cfg(not(feature = "thin-client"))]
-pub use codex_core::RolloutRecorder;
-#[cfg(not(feature = "thin-client"))]
-pub use codex_core::SortDirection;
-#[cfg(not(feature = "thin-client"))]
-pub use codex_core::ThreadItem;
-#[cfg(not(feature = "thin-client"))]
-pub use codex_core::ThreadsPage;
 #[cfg(feature = "cross-session-history")]
 pub use codex_core::append_message_history_entry;
 pub use codex_core::check_execpolicy_for_warnings;
-pub use codex_core::find_thread_meta_by_name_str;
-pub use codex_core::find_thread_name_by_id;
-pub use codex_core::find_thread_names_by_ids;
 pub use codex_core::format_exec_policy_error_with_source;
-pub use codex_core::grant_read_root_non_elevated;
 #[cfg(feature = "cross-session-history")]
 pub use codex_core::lookup_message_history_entry;
-pub use codex_core::mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
-pub use codex_core::mention_syntax::TOOL_MENTION_SIGIL;
 #[cfg(feature = "cross-session-history")]
 pub use codex_core::message_history_metadata;
-pub use codex_core::path_utils;
-pub use codex_core::read_session_meta_line;
 pub use codex_core::web_search_detail;
 #[cfg(not(feature = "cross-session-history"))]
 use codex_protocol::ThreadId;
@@ -72,9 +52,7 @@ pub mod config {
     }
 }
 
-pub mod config_loader {
-    pub use codex_core::config_loader::*;
-}
+pub mod config_loader {}
 
 pub mod connectors {
     #[allow(unused_imports)]
@@ -103,9 +81,7 @@ pub mod review_prompts {
     pub use codex_core::review_prompts::*;
 }
 
-pub mod skills {
-    pub use codex_core::skills::*;
-}
+pub mod skills {}
 
 pub mod test_support {
     #[allow(unused_imports)]

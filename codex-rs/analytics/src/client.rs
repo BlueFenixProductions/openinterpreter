@@ -41,10 +41,10 @@ const ANALYTICS_EVENTS_TIMEOUT: Duration = Duration::from_secs(10);
 const ANALYTICS_EVENT_DEDUPE_MAX_KEYS: usize = 4096;
 // Open Interpreter analytics endpoint. This replaces upstream Codex's
 // `{chatgpt_base_url}/codex/analytics-events/events` so events from any
-// provider land in our infrastructure. Users can still disable this with
-// `[analytics] enabled = false` in `~/.codex/config.toml`.
-const OPEN_INTERPRETER_ANALYTICS_URL: &str =
-    "https://oi-new-api.fly.dev/v0/open-interpreter-events";
+// provider land in our infra. Disabled the same way Codex does it:
+// set `[analytics] enabled = false` in `~/.codex/config.toml`.
+const INTERPRETER_ANALYTICS_URL: &str = "https://oi-new-api.fly.dev/v0/interpreter-events";
+const LOCAL_ANALYTICS_EVENTS_PATH: &str = "/codex/analytics-events/events";
 
 #[derive(Clone)]
 pub(crate) struct AnalyticsEventsQueue {
@@ -319,13 +319,11 @@ async fn send_track_events(
     // ChatGPT-authed users send. Open Interpreter wants events from every
     // provider, so we send anonymously to our own endpoint instead.
     let _ = auth_manager;
-    let _ = base_url;
-
-    let url = OPEN_INTERPRETER_ANALYTICS_URL;
+    let url = analytics_events_url(base_url);
     let payload = TrackEventsRequest { events };
 
     let response = create_client()
-        .post(url)
+        .post(url.as_str())
         .timeout(ANALYTICS_EVENTS_TIMEOUT)
         .header("Content-Type", "application/json")
         .json(&payload)
@@ -343,4 +341,16 @@ async fn send_track_events(
             tracing::warn!("failed to send events request: {err}");
         }
     }
+}
+
+fn analytics_events_url(base_url: &str) -> String {
+    let trimmed_base_url = base_url.trim_end_matches('/');
+    if trimmed_base_url.starts_with("http://127.0.0.1:")
+        || trimmed_base_url.starts_with("http://localhost:")
+        || trimmed_base_url.starts_with("http://[::1]:")
+    {
+        return format!("{trimmed_base_url}{LOCAL_ANALYTICS_EVENTS_PATH}");
+    }
+
+    INTERPRETER_ANALYTICS_URL.to_string()
 }

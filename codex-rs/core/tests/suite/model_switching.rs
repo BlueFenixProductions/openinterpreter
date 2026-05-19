@@ -75,6 +75,7 @@ fn test_model_info(
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
+        reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
         shell_type: ConfigShellToolType::ShellCommand,
         visibility: ModelVisibility::List,
         supported_in_api: true,
@@ -919,6 +920,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
+        reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
         shell_type: ConfigShellToolType::ShellCommand,
         visibility: ModelVisibility::List,
         supported_in_api: true,
@@ -952,13 +954,9 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
     smaller_model.description = Some("smaller context window model".to_string());
     smaller_model.context_window = Some(smaller_context_window);
 
-    mount_models_once(
-        &server,
-        ModelsResponse {
-            models: vec![base_model, smaller_model],
-        },
-    )
-    .await;
+    let model_catalog = ModelsResponse {
+        models: vec![base_model, smaller_model],
+    };
 
     mount_sse_sequence(
         &server,
@@ -977,18 +975,21 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
 
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(|config| {
+        .with_config(move |config| {
             config.model = Some(large_model_slug.to_string());
+            config.model_catalog = Some(model_catalog);
         });
     let test = builder.build(&server).await?;
 
     let models_manager = test.thread_manager.get_models_manager();
-    let available_models = models_manager.list_models(RefreshStrategy::Online).await;
+    let available_models = models_manager
+        .list_models(RefreshStrategy::OnlineIfUncached)
+        .await;
     assert!(
         available_models
             .iter()
             .any(|model| model.model == smaller_model_slug),
-        "expected {smaller_model_slug} to be available in remote model list"
+        "expected {smaller_model_slug} to be available in configured model catalog"
     );
     let large_model_info = models_manager
         .get_model_info(large_model_slug, &test.config.to_models_manager_config())

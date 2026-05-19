@@ -1516,12 +1516,12 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
     std::fs::create_dir_all(&long_home_parent).expect("create long home parent");
     let codex_home = Arc::new(TempDir::new_in(long_home_parent).unwrap());
     let skill_root = codex_home.path().join("skills");
-    for index in 0..12 {
+    for index in 0..40 {
         let skill_dir = skill_root.join(format!("s{index:02}"));
         std::fs::create_dir_all(&skill_dir).expect("create skill dir");
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            format!("---\nname: s{index:02}\ndescription: d\n---\n\n# body\n"),
+            format!("---\nname: 00-s{index:02}\ndescription: d\n---\n\n# body\n"),
         )
         .expect("write skill");
     }
@@ -1574,7 +1574,7 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
         "expected root alias for {expected_root_str}: {developer_messages:?}"
     );
     assert!(
-        developer_text.contains("- s00: d (file: r0/s00/SKILL.md)"),
+        developer_text.contains("- 00-s00: (file: r0/s00/SKILL.md)"),
         "expected skill path to use root alias: {developer_messages:?}"
     );
     assert!(

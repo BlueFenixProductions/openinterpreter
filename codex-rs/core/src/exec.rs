@@ -1256,31 +1256,6 @@ async fn consume_output(
         ))
     })?;
 
-    let expiration_wait = async {
-        if capture_policy.uses_expiration() {
-            expiration.wait().await;
-        } else {
-            std::future::pending::<()>().await;
-        }
-    };
-    tokio::pin!(expiration_wait);
-    let (exit_status, timed_out) = tokio::select! {
-        status_result = child.wait() => {
-            let exit_status = status_result?;
-            (exit_status, false)
-        }
-        _ = &mut expiration_wait => {
-            kill_child_process_group(&mut child)?;
-            child.start_kill()?;
-            (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + TIMEOUT_CODE), true)
-        }
-        _ = tokio::signal::ctrl_c() => {
-            kill_child_process_group(&mut child)?;
-            child.start_kill()?;
-            (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE), false)
-        }
-    };
-
     // We need mutable bindings so we can `abort()` them on timeout.
     use tokio::task::JoinHandle;
 
@@ -1323,6 +1298,31 @@ async fn consume_output(
 
     let mut stdout_handle = stdout_handle;
     let mut stderr_handle = stderr_handle;
+
+    let expiration_wait = async {
+        if capture_policy.uses_expiration() {
+            expiration.wait().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(expiration_wait);
+    let (exit_status, timed_out) = tokio::select! {
+        status_result = child.wait() => {
+            let exit_status = status_result?;
+            (exit_status, false)
+        }
+        _ = &mut expiration_wait => {
+            kill_child_process_group(&mut child)?;
+            child.start_kill()?;
+            (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + TIMEOUT_CODE), true)
+        }
+        _ = tokio::signal::ctrl_c() => {
+            kill_child_process_group(&mut child)?;
+            child.start_kill()?;
+            (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE), false)
+        }
+    };
 
     let stdout = await_output(&mut stdout_handle, capture_policy.io_drain_timeout()).await?;
     let stderr = await_output(&mut stderr_handle, capture_policy.io_drain_timeout()).await?;

@@ -138,7 +138,7 @@ impl From<Vec<AnthropicTextBlock>> for AnthropicToolResultContent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct AnthropicTool {
     pub name: String,
     pub description: String,

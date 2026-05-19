@@ -1,4 +1,8 @@
+use std::collections::HashSet;
+
+use codex_model_provider_info::BundledProviderCatalogEntry;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::bundled_provider_catalog;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use strum::IntoEnumIterator;
@@ -330,6 +334,23 @@ pub(crate) async fn resolve_provider_model_load_resolution(
 ) -> ProviderModelLoadResolution {
     match result {
         Ok(models) => {
+            if let Some(mismatch) = detect_provider_model_mismatch(
+                loading_state.provider_id.as_str(),
+                models.as_slice(),
+            ) {
+                return ProviderModelLoadResolution::ManualModelFallback(
+                    ManualModelFallbackState {
+                        provider_id: loading_state.provider_id,
+                        provider_name: loading_state.provider_name.clone(),
+                        manual_model_placeholder: loading_state.manual_model_placeholder,
+                        default_manual_model: loading_state.default_manual_model,
+                        message: format!(
+                            "Loaded models for {} while {} was selected. To avoid choosing a model for the wrong provider, go back and choose the provider again or enter a model id manually.",
+                            mismatch.name, loading_state.provider_name
+                        ),
+                    },
+                );
+            }
             if let Some(state) = ProviderModelSelectionState::new(
                 loading_state.provider_id.clone(),
                 loading_state.provider_name.clone(),
@@ -387,6 +408,39 @@ pub(crate) async fn resolve_provider_model_load_resolution(
             }
         }
     }
+}
+
+fn detect_provider_model_mismatch(
+    selected_provider_id: &str,
+    models: &[ModelPreset],
+) -> Option<&'static BundledProviderCatalogEntry> {
+    let selected_base_provider_id = base_provider_id(selected_provider_id);
+    if !bundled_provider_catalog()
+        .iter()
+        .any(|entry| entry.id == selected_base_provider_id)
+    {
+        return None;
+    }
+
+    let returned_model_ids: HashSet<&str> = models
+        .iter()
+        .map(|preset| preset.model.as_str())
+        .filter(|model| !model.trim().is_empty())
+        .collect();
+    if returned_model_ids.is_empty() {
+        return None;
+    }
+
+    bundled_provider_catalog().iter().find(|entry| {
+        entry.id != selected_base_provider_id && {
+            let catalog_model_ids: HashSet<&str> =
+                entry.models.iter().map(|model| model.id.as_str()).collect();
+            !catalog_model_ids.is_empty()
+                && returned_model_ids
+                    .iter()
+                    .all(|model| catalog_model_ids.contains(model))
+        }
+    })
 }
 
 async fn resolve_local_provider_unavailable_state(
@@ -462,5 +516,70 @@ fn reasoning_effort_label(effort: ReasoningEffortConfig) -> &'static str {
         ReasoningEffortConfig::Medium => "Medium",
         ReasoningEffortConfig::High => "High",
         ReasoningEffortConfig::XHigh => "Extra high",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::openai_models::ReasoningControl;
+    use codex_protocol::openai_models::default_input_modalities;
+
+    fn loading_state(provider_id: &str, provider_name: &str) -> LoadingProviderModelsState {
+        LoadingProviderModelsState {
+            provider_id: provider_id.to_string(),
+            provider_name: provider_name.to_string(),
+            manual_model_placeholder: "model-id".to_string(),
+            default_manual_model: String::new(),
+        }
+    }
+
+    fn model_preset(model: &str) -> ModelPreset {
+        ModelPreset {
+            id: model.to_string(),
+            model: model.to_string(),
+            display_name: model.to_string(),
+            description: String::new(),
+            default_reasoning_effort: ReasoningEffortConfig::None,
+            supported_reasoning_efforts: Vec::new(),
+            reasoning_control: ReasoningControl::None,
+            supports_thinking_toggle: false,
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            availability_nux: None,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+            additional_speed_tiers: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn openai_api_key_alias_does_not_reject_known_model_lists() {
+        let resolution = resolve_provider_model_load_resolution(
+            loading_state("openai_api_key", "OpenAI (API key)"),
+            Ok(vec![model_preset("k2p5"), model_preset("kimi-k2-thinking")]),
+        )
+        .await;
+
+        assert!(matches!(
+            resolution,
+            ProviderModelLoadResolution::Picker { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn kimi_code_accepts_kimi_code_model_list() {
+        let resolution = resolve_provider_model_load_resolution(
+            loading_state("kimi-for-coding", "Kimi Code"),
+            Ok(vec![model_preset("k2p5"), model_preset("kimi-k2-thinking")]),
+        )
+        .await;
+
+        assert!(matches!(
+            resolution,
+            ProviderModelLoadResolution::Picker { .. }
+        ));
     }
 }

@@ -141,6 +141,7 @@ pub struct McpToolOutput {
     pub result: CallToolResult,
     pub tool_input: JsonValue,
     pub wall_time: Duration,
+    pub supports_image_input: bool,
     pub original_image_detail_supported: bool,
 }
 
@@ -180,6 +181,16 @@ impl McpToolOutput {
     fn response_payload(&self) -> FunctionCallOutputPayload {
         let mut payload = self.result.as_function_call_output_payload();
         if let Some(items) = payload.content_items_mut() {
+            if !self.supports_image_input {
+                for item in items.iter_mut() {
+                    if matches!(item, FunctionCallOutputContentItem::InputImage { .. }) {
+                        *item = FunctionCallOutputContentItem::InputText {
+                            text: "<image content omitted because you do not support image input>"
+                                .to_string(),
+                        };
+                    }
+                }
+            }
             sanitize_original_image_detail(self.original_image_detail_supported, items);
         }
 

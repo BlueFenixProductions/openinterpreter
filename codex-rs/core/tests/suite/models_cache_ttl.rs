@@ -72,7 +72,7 @@ async fn renews_cache_ttl_on_matching_models_etag() -> Result<()> {
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await;
 
-    let cache_path = config.codex_home.join(CACHE_FILE);
+    let cache_path = model_cache_path(&config.codex_home);
     let stale_time = Utc.timestamp_opt(0, 0).single().expect("valid epoch");
     rewrite_cache_timestamp(&cache_path, stale_time).await?;
 
@@ -159,7 +159,7 @@ async fn uses_cache_when_version_matches() -> Result<()> {
                 client_version: Some(client_version_to_whole()),
                 models: vec![cached_model],
             };
-            let cache_path = home.join(CACHE_FILE);
+            let cache_path = model_cache_path(home);
             write_cache_sync(&cache_path, &cache).expect("write cache");
         })
         .with_config(|config| {
@@ -206,7 +206,7 @@ async fn refreshes_when_cache_version_missing() -> Result<()> {
                 client_version: None,
                 models: vec![cached_model],
             };
-            let cache_path = home.join(CACHE_FILE);
+            let cache_path = model_cache_path(home);
             write_cache_sync(&cache_path, &cache).expect("write cache");
         })
         .with_config(|config| {
@@ -254,7 +254,7 @@ async fn refreshes_when_cache_version_differs() -> Result<()> {
                 client_version: Some(format!("{client_version}-diff")),
                 models: vec![cached_model],
             };
-            let cache_path = home.join(CACHE_FILE);
+            let cache_path = model_cache_path(home);
             write_cache_sync(&cache_path, &cache).expect("write cache");
         })
         .with_config(|config| {
@@ -289,6 +289,10 @@ async fn rewrite_cache_timestamp(path: &Path, fetched_at: DateTime<Utc>) -> Resu
     Ok(())
 }
 
+fn model_cache_path(home: &Path) -> std::path::PathBuf {
+    home.join("models-cache").join("openai").join(CACHE_FILE)
+}
+
 async fn read_cache(path: &Path) -> Result<ModelsCache> {
     let contents = tokio::fs::read(path).await?;
     let cache = serde_json::from_slice(&contents)?;
@@ -303,6 +307,9 @@ async fn write_cache(path: &Path, cache: &ModelsCache) -> Result<()> {
 
 fn write_cache_sync(path: &Path, cache: &ModelsCache) -> Result<()> {
     let contents = serde_json::to_vec_pretty(cache)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(path, contents)?;
     Ok(())
 }
@@ -333,6 +340,7 @@ fn test_remote_model(slug: &str, priority: i32) -> ModelInfo {
                 description: "medium".to_string(),
             },
         ],
+        reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
         shell_type: ConfigShellToolType::ShellCommand,
         visibility: ModelVisibility::List,
         supported_in_api: true,

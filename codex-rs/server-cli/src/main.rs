@@ -31,11 +31,7 @@ fn main() -> anyhow::Result<()> {
     record_startup_trace_event("interpreter.main.home.ready");
 
     let raw_args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    if should_delegate_directly(&raw_args) {
-        return exec_interpreter_cli(raw_args);
-    }
-
-    if let Some(command) = scan_top_level_command(&raw_args) {
+    if let Some(command) = route_top_level_command(&raw_args) {
         return match command {
             TopLevelCommand::Passthrough => exec_interpreter_cli(raw_args),
             TopLevelCommand::Kill {
@@ -73,6 +69,11 @@ enum TopLevelCommand {
     ProviderAuth {
         provider_id: String,
     },
+}
+
+fn route_top_level_command(raw_args: &[OsString]) -> Option<TopLevelCommand> {
+    scan_top_level_command(raw_args)
+        .or_else(|| should_delegate_directly(raw_args).then_some(TopLevelCommand::Passthrough))
 }
 
 fn scan_top_level_command(raw_args: &[OsString]) -> Option<TopLevelCommand> {
@@ -146,7 +147,9 @@ fn scan_top_level_command(raw_args: &[OsString]) -> Option<TopLevelCommand> {
         }
 
         return match arg.as_ref() {
-            "resume" | "fork" | "exec" => Some(TopLevelCommand::Passthrough),
+            "help" | "resume" | "fork" | "exec" | "mcp" | "update" => {
+                Some(TopLevelCommand::Passthrough)
+            }
             "kill" => Some(TopLevelCommand::Kill {
                 force: raw_args[index + 1..]
                     .iter()
@@ -335,4 +338,78 @@ fn confirm_daemon_stop() -> anyhow::Result<bool> {
 
 fn is_confirmation_response(response: &str) -> bool {
     matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_subcommand_delegates_to_app_server_cli() {
+        assert_eq!(
+            scan_top_level_command(&[OsString::from("mcp"), OsString::from("--help")]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn mcp_help_routes_to_app_server_cli_before_help_passthrough() {
+        assert_eq!(
+            route_top_level_command(&[OsString::from("mcp"), OsString::from("--help")]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn root_help_routes_to_app_server_cli() {
+        assert_eq!(
+            route_top_level_command(&[OsString::from("--help")]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn mcp_subcommand_after_root_options_delegates_to_app_server_cli() {
+        assert_eq!(
+            scan_top_level_command(&[
+                OsString::from("-c"),
+                OsString::from("model=\"gpt-5.4\""),
+                OsString::from("mcp"),
+                OsString::from("list"),
+            ]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn exec_subcommand_delegates_to_app_server_cli() {
+        assert_eq!(
+            scan_top_level_command(&[OsString::from("exec"), OsString::from("hello")]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn resume_subcommand_delegates_to_app_server_cli() {
+        assert_eq!(
+            scan_top_level_command(&[OsString::from("resume"), OsString::from("--last")]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn update_help_routes_to_app_server_cli() {
+        assert_eq!(
+            route_top_level_command(&[OsString::from("update"), OsString::from("--help")]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn help_subcommand_routes_to_app_server_cli() {
+        assert_eq!(
+            route_top_level_command(&[OsString::from("help"), OsString::from("update")]),
+            Some(TopLevelCommand::Passthrough)
+        );
+    }
 }

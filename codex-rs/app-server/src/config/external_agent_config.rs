@@ -1,6 +1,8 @@
 use codex_config::types::PluginConfig;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
+use codex_core::config::edit::ConfigEdit;
+use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::plugins::PluginId;
 use codex_core::plugins::PluginInstallRequest;
 use codex_core::plugins::PluginsManager;
@@ -20,6 +22,7 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
+use toml_edit::value;
 
 const EXTERNAL_AGENT_CONFIG_DETECT_METRIC: &str = "codex.external_agent_config.detect";
 const EXTERNAL_AGENT_CONFIG_IMPORT_METRIC: &str = "codex.external_agent_config.import";
@@ -495,6 +498,16 @@ impl ExternalAgentConfigService {
                         .push(format!("{plugin_name}@{marketplace_name}")),
                 }
             }
+        }
+        if !outcome.succeeded_plugin_ids.is_empty() {
+            ConfigEditsBuilder::new(&self.codex_home)
+                .with_edits([ConfigEdit::SetPath {
+                    segments: vec!["features".to_string(), "plugins".to_string()],
+                    value: value(true),
+                }])
+                .apply()
+                .await
+                .map_err(|err| invalid_data_error(err.to_string()))?;
         }
 
         Ok(outcome)

@@ -101,6 +101,10 @@ fn resolve_exec_binary(arg0_paths: &Arg0DispatchPaths) -> Result<PathBuf> {
         return Ok(program);
     }
 
+    if let Ok(program) = which::which(legacy_exec_binary_name()) {
+        return Ok(program);
+    }
+
     bail!(
         "could not find a local `{}` binary; build it or install it alongside `interpreter`",
         exec_binary_name()
@@ -118,9 +122,11 @@ fn sibling_exec_binary(arg0_paths: &Arg0DispatchPaths) -> Result<Option<PathBuf>
     };
 
     for candidate_dir in std::iter::once(bin_dir).chain(bin_dir.parent()) {
-        let candidate = candidate_dir.join(exec_binary_name());
-        if candidate.exists() {
-            return Ok(Some(candidate));
+        for binary_name in [exec_binary_name(), legacy_exec_binary_name()] {
+            let candidate = candidate_dir.join(binary_name);
+            if candidate.exists() {
+                return Ok(Some(candidate));
+            }
         }
     }
     Ok(None)
@@ -129,11 +135,86 @@ fn sibling_exec_binary(arg0_paths: &Arg0DispatchPaths) -> Result<Option<PathBuf>
 fn exec_binary_name() -> &'static str {
     #[cfg(windows)]
     {
+        "interpreter-exec.exe"
+    }
+
+    #[cfg(not(windows))]
+    {
+        "interpreter-exec"
+    }
+}
+
+fn legacy_exec_binary_name() -> &'static str {
+    #[cfg(windows)]
+    {
         "codex-exec.exe"
     }
 
     #[cfg(not(windows))]
     {
         "codex-exec"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn exec_binary_name_is_open_interpreter_branded() {
+        #[cfg(windows)]
+        assert_eq!(exec_binary_name(), "interpreter-exec.exe");
+
+        #[cfg(not(windows))]
+        assert_eq!(exec_binary_name(), "interpreter-exec");
+    }
+
+    #[test]
+    fn sibling_exec_binary_prefers_interpreter_exec() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let interpreter = tmp.path().join(interpreter_binary_name());
+        let interpreter_exec = tmp.path().join(exec_binary_name());
+        let legacy_exec = tmp.path().join(legacy_exec_binary_name());
+        fs::write(&interpreter, "")?;
+        fs::write(&interpreter_exec, "")?;
+        fs::write(&legacy_exec, "")?;
+
+        let arg0_paths = Arg0DispatchPaths {
+            codex_self_exe: Some(interpreter),
+            ..Arg0DispatchPaths::default()
+        };
+
+        assert_eq!(sibling_exec_binary(&arg0_paths)?, Some(interpreter_exec));
+        Ok(())
+    }
+
+    #[test]
+    fn sibling_exec_binary_accepts_legacy_codex_exec() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let interpreter = tmp.path().join(interpreter_binary_name());
+        let legacy_exec = tmp.path().join(legacy_exec_binary_name());
+        fs::write(&interpreter, "")?;
+        fs::write(&legacy_exec, "")?;
+
+        let arg0_paths = Arg0DispatchPaths {
+            codex_self_exe: Some(interpreter),
+            ..Arg0DispatchPaths::default()
+        };
+
+        assert_eq!(sibling_exec_binary(&arg0_paths)?, Some(legacy_exec));
+        Ok(())
+    }
+
+    fn interpreter_binary_name() -> &'static str {
+        #[cfg(windows)]
+        {
+            "interpreter.exe"
+        }
+
+        #[cfg(not(windows))]
+        {
+            "interpreter"
+        }
     }
 }

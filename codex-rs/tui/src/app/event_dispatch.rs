@@ -6,6 +6,7 @@
 use super::*;
 
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
+const DROP_COMMITTED_HISTORY_ENV: &str = "INTERPRETER_TUI_DROP_COMMITTED_HISTORY";
 
 impl App {
     pub(super) async fn handle_event(
@@ -180,11 +181,14 @@ impl App {
             }
             AppEvent::InsertHistoryCell(cell) => {
                 let cell: Arc<dyn HistoryCell> = cell.into();
-                if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                    t.insert_cell(cell.clone());
-                    tui.frame_requester().schedule_frame();
+                let retain_committed_history = retain_committed_history();
+                if retain_committed_history {
+                    if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+                        t.insert_cell(cell.clone());
+                        tui.frame_requester().schedule_frame();
+                    }
+                    self.transcript_cells.push(cell.clone());
                 }
-                self.transcript_cells.push(cell.clone());
                 let mut display = cell.display_lines(tui.terminal.last_known_screen_size.width);
                 if !display.is_empty() {
                     // Only insert a separating blank line for new cells that are not
@@ -1933,6 +1937,40 @@ impl App {
                 self.pending_shutdown_exit_thread_id = None;
                 AppRunControl::Exit(ExitReason::UserRequested)
             }
+        }
+    }
+}
+
+fn retain_committed_history() -> bool {
+    !env_flag_enabled(DROP_COMMITTED_HISTORY_ENV)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| flag_value_enabled(&value))
+}
+
+fn flag_value_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flag_value_enabled;
+
+    #[test]
+    fn flag_value_enabled_accepts_common_true_values() {
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(flag_value_enabled(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn flag_value_enabled_rejects_other_values() {
+        for value in ["", "0", "false", "no", "off", "anything"] {
+            assert!(!flag_value_enabled(value), "{value}");
         }
     }
 }

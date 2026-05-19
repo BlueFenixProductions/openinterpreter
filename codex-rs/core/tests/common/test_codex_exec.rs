@@ -12,8 +12,8 @@ pub struct TestCodexExecBuilder {
 impl TestCodexExecBuilder {
     pub fn cmd(&self) -> assert_cmd::Command {
         let mut cmd = assert_cmd::Command::new(
-            codex_utils_cargo_bin::cargo_bin("codex-exec")
-                .expect("should find binary for codex-exec"),
+            codex_utils_cargo_bin::cargo_bin("interpreter-exec")
+                .expect("should find binary for interpreter-exec"),
         );
         cmd.current_dir(self.cwd.path())
             .env("CODEX_HOME", self.home.path())

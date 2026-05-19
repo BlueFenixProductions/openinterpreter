@@ -19,6 +19,8 @@ use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
 use crate::tools::handlers::apply_granted_turn_permissions;
+use crate::tools::handlers::claude_code_output::CLAUDE_READ_MAX_WHOLE_FILE_BYTES;
+use crate::tools::handlers::claude_code_output::claude_large_read_file_message;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::plan::handle_update_plan;
 use crate::tools::orchestrator::ToolOrchestrator;
@@ -200,12 +202,22 @@ impl ToolHandler for ClaudeReadHandler {
         let content = tokio::fs::read_to_string(path.as_path())
             .await
             .map_err(|err| FunctionCallError::RespondToModel(format!("Read failed: {err}")))?;
-        let formatted = format_read_output(
-            &content,
-            args.offset.unwrap_or(1),
-            args.limit.unwrap_or(2000),
-        );
-        Ok(FunctionToolOutput::from_text(formatted, Some(true)))
+        let is_large_whole_file = args.offset.is_none()
+            && args.limit.is_none()
+            && content.len() > CLAUDE_READ_MAX_WHOLE_FILE_BYTES;
+        let formatted = if is_large_whole_file {
+            claude_large_read_file_message(content.len())
+        } else {
+            format_read_output(
+                &content,
+                args.offset.unwrap_or(1),
+                args.limit.unwrap_or(2000),
+            )
+        };
+        Ok(FunctionToolOutput::from_text(
+            formatted,
+            Some(!is_large_whole_file),
+        ))
     }
 }
 
@@ -296,7 +308,10 @@ impl ToolHandler for ClaudeWriteHandler {
             .await
             .map_err(|err| FunctionCallError::RespondToModel(format!("Write failed: {err}")))?;
         Ok(FunctionToolOutput::from_text(
-            format!("File created successfully at: {}", path.display()),
+            format!(
+                "File created successfully at: {} (file state is current in your context — no need to Read it back)",
+                path.display()
+            ),
             Some(true),
         ))
     }
@@ -617,7 +632,8 @@ impl ToolHandler for ClaudeEditHandler {
                 "Edit received unsupported payload".to_string(),
             ));
         };
-        let args: ClaudeEditArgs = parse_arguments(&arguments)?;
+        let mut args: ClaudeEditArgs = parse_arguments(&arguments)?;
+        args.new_string = trim_trailing_horizontal_whitespace_per_line(&args.new_string);
         if args.old_string == args.new_string {
             return Err(FunctionCallError::RespondToModel(
                 "old_string and new_string must differ".to_string(),
@@ -641,7 +657,10 @@ impl ToolHandler for ClaudeEditHandler {
                 path.display()
             )
         } else {
-            format!("The file {} has been updated.", path.display())
+            format!(
+                "The file {} has been updated successfully. (file state is current in your context — no need to Read it back)",
+                path.display()
+            )
         };
         Ok(FunctionToolOutput::from_text(message, Some(true)))
     }
@@ -754,6 +773,7 @@ impl ToolHandler for ClaudeBashHandler {
             hook_command: codex_shell_command::parse_command::shlex_join(&exec_params.command),
             cwd: exec_params.cwd.clone(),
             timeout_ms,
+            capture_policy: exec_params.capture_policy,
             env: exec_params.env.clone(),
             explicit_env_overrides: turn.shell_environment_policy.r#set.clone(),
             network: exec_params.network.clone(),
@@ -789,7 +809,7 @@ impl ToolHandler for ClaudeBashHandler {
                 emitter
                     .emit(event_ctx, ToolEventStage::Success(output.clone()))
                     .await;
-                let text = bash_output_text(&output, turn.as_ref());
+                let text = bash_output_text(&output, turn.as_ref(), &call_id);
                 if output.exit_code == 0 {
                     Ok(FunctionToolOutput {
                         body: vec![
@@ -816,6 +836,7 @@ impl ToolHandler for ClaudeBashHandler {
                 Err(FunctionCallError::RespondToModel(bash_output_text(
                     &output,
                     turn.as_ref(),
+                    &call_id,
                 )))
             }
             Err(ToolError::Rejected(message)) => {
@@ -933,15 +954,39 @@ fn replace_exact_text(content: &str, args: &ClaudeEditArgs) -> Result<String, Fu
     }
 }
 
+fn trim_trailing_horizontal_whitespace_per_line(content: &str) -> String {
+    content
+        .split_inclusive('\n')
+        .map(|line| {
+            if let Some(line) = line.strip_suffix('\n') {
+                format!("{}\n", line.trim_end_matches([' ', '\t']))
+            } else {
+                line.trim_end_matches([' ', '\t']).to_string()
+            }
+        })
+        .collect()
+}
+
 fn bash_output_text(
     output: &codex_protocol::exec_output::ExecToolCallOutput,
     turn: &TurnContext,
+    _call_id: &str,
 ) -> String {
-    let text = crate::tools::format_exec_output_str(output, turn.truncation_policy);
-    if text.is_empty() {
+    let raw_text = if output.timed_out {
+        format!(
+            "command timed out after {} milliseconds\n{}",
+            output.duration.as_millis(),
+            output.aggregated_output.text
+        )
+    } else {
+        output.aggregated_output.text.clone()
+    };
+    if raw_text.is_empty() && output.exit_code != 0 {
+        format!("Exit code {}", output.exit_code)
+    } else if raw_text.is_empty() {
         CLAUDE_BASH_EMPTY_OUTPUT.to_string()
     } else {
-        text
+        crate::tools::format_exec_output_str(output, turn.truncation_policy)
     }
 }
 

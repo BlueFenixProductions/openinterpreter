@@ -110,7 +110,7 @@ async fn run_root_tui(
             anyhow::bail!("`--remote-auth-token-env` requires `--remote`.");
         }
         let daemon_cli_overrides = daemon_startup_overrides(&interactive.config_overrides);
-        print_root_tui_startup_message();
+        print_root_tui_startup_message().await;
         record_startup_trace_event("interpreter.tui.delegate.enter");
         codex_tui::run_main_with_deferred_remote(
             interactive,
@@ -137,13 +137,24 @@ async fn run_root_tui(
     handle_app_exit(exit_info)
 }
 
-fn print_root_tui_startup_message() {
-    if std::io::stderr().is_terminal()
-        && std::env::var_os("OPEN_INTERPRETER_STARTUP_MESSAGE_SHOWN").is_none()
+async fn print_root_tui_startup_message() {
+    if !std::io::stderr().is_terminal()
+        || std::env::var_os("OPEN_INTERPRETER_STARTUP_MESSAGE_SHOWN").is_some()
     {
-        eprint!("\rStarting Open Interpreter daemon. This only happens once...");
-        let _ = std::io::stderr().flush();
+        return;
     }
+
+    let startup_message = match home::current_interpreter_home() {
+        Ok(codex_home) => {
+            match codex_app_server_launcher::local_app_server_status(&codex_home).await {
+                Ok(Some(_)) => "Connecting to Open Interpreter daemon...",
+                Ok(None) | Err(_) => "Starting Open Interpreter daemon. This only happens once...",
+            }
+        }
+        Err(_) => "Starting Open Interpreter daemon. This only happens once...",
+    };
+    eprint!("\r{startup_message}");
+    let _ = std::io::stderr().flush();
 }
 
 fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {

@@ -168,7 +168,8 @@ impl ToolCallRuntime {
         let invocation_cancellation_token = cancellation_token.clone();
         let started = Instant::now();
         let display_name = call.tool_name.display();
-        let defer_spawn_until_polled = turn.tools_config.harness.is_kimi_cli();
+        let defer_spawn_until_polled =
+            turn.tools_config.harness.is_kimi_cli() || turn.tools_config.harness.is_claude_code();
 
         let dispatch_span = trace_span!(
             "dispatch_tool_call_with_code_mode_result",

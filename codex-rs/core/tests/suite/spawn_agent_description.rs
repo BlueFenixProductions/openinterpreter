@@ -17,7 +17,6 @@ use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
@@ -59,6 +58,7 @@ fn test_model_info(
         description: Some(description.to_string()),
         default_reasoning_level: Some(default_reasoning_level),
         supported_reasoning_levels,
+        reasoning_control: codex_protocol::openai_models::ReasoningControl::None,
         shell_type: ConfigShellToolType::ShellCommand,
         visibility,
         supported_in_api: true,
@@ -105,42 +105,38 @@ async fn wait_for_model_available(manager: &SharedModelsManager, slug: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Result<()> {
     let server = start_mock_server().await;
-    mount_models_once(
-        &server,
-        ModelsResponse {
-            models: vec![
-                test_model_info(
-                    "visible-model",
-                    "Visible Model",
-                    "Fast and capable",
-                    ModelVisibility::List,
-                    ReasoningEffort::Medium,
-                    vec![
-                        ReasoningEffortPreset {
-                            effort: ReasoningEffort::Low,
-                            description: "Quick scan".to_string(),
-                        },
-                        ReasoningEffortPreset {
-                            effort: ReasoningEffort::High,
-                            description: "Deep dive".to_string(),
-                        },
-                    ],
-                ),
-                test_model_info(
-                    "hidden-model",
-                    "Hidden Model",
-                    "Should not be shown",
-                    ModelVisibility::Hide,
-                    ReasoningEffort::Low,
-                    vec![ReasoningEffortPreset {
+    let model_catalog = ModelsResponse {
+        models: vec![
+            test_model_info(
+                "visible-model",
+                "Visible Model",
+                "Fast and capable",
+                ModelVisibility::List,
+                ReasoningEffort::Medium,
+                vec![
+                    ReasoningEffortPreset {
                         effort: ReasoningEffort::Low,
-                        description: "Not visible".to_string(),
-                    }],
-                ),
-            ],
-        },
-    )
-    .await;
+                        description: "Quick scan".to_string(),
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::High,
+                        description: "Deep dive".to_string(),
+                    },
+                ],
+            ),
+            test_model_info(
+                "hidden-model",
+                "Hidden Model",
+                "Should not be shown",
+                ModelVisibility::Hide,
+                ReasoningEffort::Low,
+                vec![ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Not visible".to_string(),
+                }],
+            ),
+        ],
+    };
     let resp_mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
@@ -150,11 +146,12 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_model("visible-model")
-        .with_config(|config| {
+        .with_config(move |config| {
             config
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config.model_catalog = Some(model_catalog);
         });
     let test = builder.build(&server).await?;
     wait_for_model_available(&test.thread_manager.get_models_manager(), "visible-model").await;
