@@ -283,6 +283,9 @@ pub(crate) async fn handle_output_item_done(
             record_completed_response_item(ctx.sess.as_ref(), ctx.turn_context.as_ref(), &item)
                 .await;
             let last_agent_message = last_assistant_message_from_item(&item, plan_mode);
+            if matches!(&item, ResponseItem::Message { role, .. } if role == "user") {
+                output.needs_follow_up = true;
+            }
 
             output.last_agent_message = last_agent_message;
         }

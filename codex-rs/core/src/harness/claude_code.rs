@@ -1,6 +1,7 @@
 use crate::client_common::Prompt;
 use crate::event_mapping::is_contextual_user_message_content;
 use crate::harness::claude_code_prompt::ClaudeCodeShellToolName;
+use crate::harness::claude_code_prompt::build_bare_system_prompt;
 use crate::harness::claude_code_prompt::build_child_agent_system_prompt;
 use crate::harness::claude_code_prompt::build_system_prompt;
 use chrono::Datelike;
@@ -42,13 +43,15 @@ use std::hash::Hash;
 use std::hash::Hasher;
 
 pub(crate) const CLAUDE_CODE_BETA_HEADER: &str = "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24";
+pub(crate) const CLAUDE_CODE_BARE_BETA_HEADER: &str = "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24";
 pub(crate) const CLAUDE_CODE_TITLE_BETA_HEADER: &str = "interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,structured-outputs-2025-12-15";
+pub(crate) const CLAUDE_CODE_BARE_TITLE_BETA_HEADER: &str = "interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15";
 pub(crate) const CLAUDE_CODE_STARTUP_HEAD_USER_AGENT: &str = "Bun/1.3.14";
-pub(crate) const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.143 (external, sdk-cli)";
+pub(crate) const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.150 (external, sdk-cli)";
 pub(crate) const CLAUDE_CODE_APP_HEADER: &str = "cli";
 const CLAUDE_CODE_DEFAULT_MAX_TOKENS: u32 = 32_000;
 const CLAUDE_CODE_OPUS_4_6_PLUS_MAX_TOKENS: u32 = 64_000;
-const CLAUDE_CODE_VERSION: &str = "2.1.143";
+const CLAUDE_CODE_VERSION: &str = "2.1.150";
 const CLAUDE_CODE_BILLING_VERSION_SALT: &str = "59cf53e54c78";
 const CLAUDE_CODE_BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header: cc_version=";
 const CLAUDE_CODE_BILLING_ENTRYPOINT: &str = "sdk-cli";
@@ -71,12 +74,44 @@ SKIP: file imports `openai`/other-provider SDK, filename like `*-openai.py`/`*-g
 - init: Initialize a new CLAUDE.md file with codebase documentation
 - review: Review a pull request
 - security-review: Complete a security review of the pending changes on the current branch"#;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClaudeCodeProfile {
+    Full,
+    Bare,
+}
+
+impl ClaudeCodeProfile {
+    pub(crate) fn is_bare(self) -> bool {
+        matches!(self, Self::Bare)
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn build_request(
     prompt: &Prompt,
     model_info: &ModelInfo,
     effort: Option<ReasoningEffortConfig>,
     session_id: &str,
     session_source: Option<&SessionSource>,
+) -> Result<AnthropicMessageRequest, serde_json::Error> {
+    build_request_for_profile(
+        prompt,
+        model_info,
+        effort,
+        session_id,
+        session_source,
+        ClaudeCodeProfile::Full,
+    )
+}
+
+pub(crate) fn build_request_for_profile(
+    prompt: &Prompt,
+    model_info: &ModelInfo,
+    effort: Option<ReasoningEffortConfig>,
+    session_id: &str,
+    session_source: Option<&SessionSource>,
+    profile: ClaudeCodeProfile,
 ) -> Result<AnthropicMessageRequest, serde_json::Error> {
     let billing_version_source = first_non_contextual_user_text(prompt)
         .unwrap_or_default()
@@ -85,7 +120,8 @@ pub(crate) fn build_request(
         session_source,
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
     );
-    let mut messages = build_messages(&prompt.input, !is_child_agent_request)?;
+    let mut messages =
+        build_messages(&prompt.input, !is_child_agent_request && !profile.is_bare())?;
     prepend_current_date_reminder(&mut messages);
     apply_message_cache_breakpoint(&mut messages);
     normalize_plain_text_messages(&mut messages);
@@ -98,14 +134,23 @@ pub(crate) fn build_request(
     } else {
         Some(AnthropicThinkingConfig::enabled(max_tokens - 1))
     };
-    let output_config = claude_code_output_config(
-        model_info,
-        if is_child_agent_request { None } else { effort },
-    );
+    let output_config = if profile.is_bare() {
+        Some(AnthropicOutputConfig {
+            effort: Some("high".to_string()),
+            format: None,
+        })
+    } else {
+        claude_code_output_config(
+            model_info,
+            if is_child_agent_request { None } else { effort },
+        )
+    };
 
-    let tools = build_tools(&prompt.tools, is_child_agent_request)?;
+    let tools = build_tools(&prompt.tools, is_child_agent_request, profile)?;
     let system_prompt = if is_child_agent_request {
         build_child_agent_system_prompt(prompt, model_info.slug.as_str())
+    } else if profile.is_bare() {
+        build_bare_system_prompt(prompt)
     } else {
         let shell_tool_name = if tools.iter().any(|tool| tool.name == "Bash") {
             ClaudeCodeShellToolName::Bash
@@ -114,17 +159,17 @@ pub(crate) fn build_request(
         };
         build_system_prompt(prompt, model_info.slug.as_str(), shell_tool_name)
     };
-    let system = vec![
-        AnthropicTextBlock::new(build_billing_header(
-            "message",
-            model_info.slug.as_str(),
-            billing_version_source.as_str(),
-            &messages,
-            &tools,
-        )),
-        AnthropicTextBlock::ephemeral(CLAUDE_CODE_SYSTEM_PROMPT_HEADER.to_string()),
-        AnthropicTextBlock::ephemeral(system_prompt),
-    ];
+    let mut system = vec![AnthropicTextBlock::new(build_billing_header(
+        "message",
+        model_info.slug.as_str(),
+        billing_version_source.as_str(),
+        &messages,
+        &tools,
+    ))];
+    system.push(AnthropicTextBlock::ephemeral(
+        CLAUDE_CODE_SYSTEM_PROMPT_HEADER.to_string(),
+    ));
+    system.push(AnthropicTextBlock::ephemeral(system_prompt));
 
     Ok(AnthropicMessageRequest {
         model: model_info.slug.clone(),
@@ -146,10 +191,20 @@ pub(crate) fn build_request(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_title_request(
     prompt: &Prompt,
     model_info: &ModelInfo,
     session_id: &str,
+) -> Result<Option<AnthropicMessageRequest>, serde_json::Error> {
+    build_title_request_for_profile(prompt, model_info, session_id, ClaudeCodeProfile::Full)
+}
+
+pub(crate) fn build_title_request_for_profile(
+    prompt: &Prompt,
+    model_info: &ModelInfo,
+    session_id: &str,
+    profile: ClaudeCodeProfile,
 ) -> Result<Option<AnthropicMessageRequest>, serde_json::Error> {
     let Some(title_text) = first_non_contextual_user_text(prompt) else {
         return Ok(None);
@@ -166,10 +221,15 @@ pub(crate) fn build_title_request(
         }]),
     }];
     let tools = vec![];
+    let request_model = if profile.is_bare() {
+        "claude-haiku-4-5-20251001"
+    } else {
+        model_info.slug.as_str()
+    };
     let system = vec![
         AnthropicTextBlock::new(build_billing_header(
             "title",
-            model_info.slug.as_str(),
+            request_model,
             title_text.as_str(),
             &messages,
             &tools,
@@ -177,8 +237,14 @@ pub(crate) fn build_title_request(
         AnthropicTextBlock::new(CLAUDE_CODE_SYSTEM_PROMPT_HEADER.to_string()),
         AnthropicTextBlock::new(CLAUDE_CODE_TITLE_PROMPT.to_string()),
     ];
-    let mut output_config =
-        claude_code_output_config(model_info, Some(ReasoningEffortConfig::XHigh));
+    let mut output_config = if profile.is_bare() {
+        Some(AnthropicOutputConfig {
+            effort: None,
+            format: None,
+        })
+    } else {
+        claude_code_output_config(model_info, Some(ReasoningEffortConfig::XHigh))
+    };
     if let Some(output_config) = &mut output_config {
         output_config.format = Some(AnthropicOutputFormat::JsonSchema {
             schema: json!({
@@ -194,7 +260,7 @@ pub(crate) fn build_title_request(
         });
     }
     Ok(Some(AnthropicMessageRequest {
-        model: model_info.slug.clone(),
+        model: request_model.to_string(),
         messages,
         system,
         tools,
@@ -202,8 +268,8 @@ pub(crate) fn build_title_request(
         context_management: None,
         output_config,
         metadata: Some(build_request_metadata(session_id)),
-        temperature: None,
-        max_tokens: claude_code_max_tokens(model_info.slug.as_str()),
+        temperature: profile.is_bare().then_some(1),
+        max_tokens: claude_code_max_tokens(request_model),
         stream: true,
     }))
 }
@@ -568,6 +634,7 @@ fn flush_pending_tool_results(
                 content: build_claude_tool_result_content(
                     tool_name,
                     &output.body,
+                    is_error == Some(true),
                     todo_reminder_text.as_deref(),
                 ),
                 is_error,
@@ -580,12 +647,17 @@ fn flush_pending_tool_results(
 fn build_claude_tool_result_content(
     tool_name: Option<&str>,
     body: &FunctionCallOutputBody,
+    is_error: bool,
     todo_reminder_text: Option<&str>,
 ) -> AnthropicToolResultContent {
     match body {
-        FunctionCallOutputBody::Text(content) => {
-            normalize_claude_tool_result_text(tool_name, content.clone(), todo_reminder_text).into()
-        }
+        FunctionCallOutputBody::Text(content) => normalize_claude_tool_result_text(
+            tool_name,
+            content.clone(),
+            is_error,
+            todo_reminder_text,
+        )
+        .into(),
         FunctionCallOutputBody::ContentItems(items) => {
             let blocks = items
                 .iter()
@@ -595,6 +667,7 @@ fn build_claude_tool_result_content(
                 normalize_claude_tool_result_text(
                     tool_name,
                     blocks[0].text.clone(),
+                    is_error,
                     todo_reminder_text,
                 )
                 .into()
@@ -608,15 +681,20 @@ fn build_claude_tool_result_content(
 fn normalize_claude_tool_result_text(
     tool_name: Option<&str>,
     content: String,
+    is_error: bool,
     todo_reminder_text: Option<&str>,
 ) -> String {
-    let normalized = if matches!(tool_name, Some("Bash")) {
+    let mut normalized = if matches!(tool_name, Some("Bash")) {
         trim_surrounding_whitespace(content)
     } else if matches!(tool_name, Some("TodoWrite")) {
         trim_trailing_newlines(content)
     } else {
         content
     };
+
+    if is_error && !normalized.starts_with("<tool_use_error>") {
+        normalized = format!("<tool_use_error>{normalized}</tool_use_error>");
+    }
 
     if let Some(todo_reminder_text) = todo_reminder_text {
         format!("{normalized}\n\n{todo_reminder_text}")
@@ -898,12 +976,16 @@ fn normalize_plain_text_messages(messages: &mut [AnthropicMessage]) {
 fn build_tools(
     tools: &[ToolSpec],
     is_child_agent_request: bool,
+    profile: ClaudeCodeProfile,
 ) -> Result<Vec<AnthropicTool>, serde_json::Error> {
     let allowed_names = claude_code_allowed_tool_names();
     let mut tools = tools
         .iter()
         .filter_map(|tool| match tool {
             ToolSpec::Function(tool) => {
+                if profile.is_bare() && !matches!(tool.name.as_str(), "Bash" | "Edit" | "Read") {
+                    return None;
+                }
                 if is_child_agent_request
                     && matches!(
                         tool.name.as_str(),
@@ -961,7 +1043,11 @@ fn build_tools(
                 })),
                 "Bash" => Some(Ok(AnthropicTool {
                     name: "Bash".to_string(),
-                    description: tool.description.clone(),
+                    description: if profile.is_bare() {
+                        "execute shell commands".to_string()
+                    } else {
+                        tool.description.clone()
+                    },
                     input_schema: serde_json::json!({
                         "$schema": "https://json-schema.org/draft/2020-12/schema",
                         "type": "object",
@@ -993,7 +1079,11 @@ fn build_tools(
                 })),
                 "Edit" => Some(Ok(AnthropicTool {
                     name: "Edit".to_string(),
-                    description: tool.description.clone(),
+                    description: if profile.is_bare() {
+                        "modify file contents in place".to_string()
+                    } else {
+                        tool.description.clone()
+                    },
                     input_schema: serde_json::json!({
                         "$schema": "https://json-schema.org/draft/2020-12/schema",
                         "type": "object",
@@ -1022,7 +1112,11 @@ fn build_tools(
                 })),
                 "Read" => Some(Ok(AnthropicTool {
                     name: "Read".to_string(),
-                    description: tool.description.clone(),
+                    description: if profile.is_bare() {
+                        "read files, images, PDFs, notebooks".to_string()
+                    } else {
+                        tool.description.clone()
+                    },
                     input_schema: serde_json::json!({
                         "$schema": "https://json-schema.org/draft/2020-12/schema",
                         "type": "object",
@@ -1112,16 +1206,20 @@ fn build_tools(
             | ToolSpec::Freeform(_) => None,
         })
         .collect::<Result<Vec<_>, serde_json::Error>>()?;
-    let existing_names = tools
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect::<HashSet<_>>();
-    tools.extend(reference_claude_supplemental_tools(
-        &existing_names,
-        is_child_agent_request,
-        allowed_names.as_ref(),
-    )?);
-    normalize_reference_claude_tool_descriptions(&mut tools);
+    if !profile.is_bare() {
+        let existing_names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<HashSet<_>>();
+        tools.extend(reference_claude_supplemental_tools(
+            &existing_names,
+            is_child_agent_request,
+            allowed_names.as_ref(),
+        )?);
+    }
+    if !profile.is_bare() {
+        normalize_reference_claude_tool_descriptions(&mut tools);
+    }
     tools.sort_by_key(|tool| match tool.name.as_str() {
         "Agent" => 0,
         "AskUserQuestion" => 1,
@@ -2751,7 +2849,7 @@ mod tests {
             },
         ];
 
-        let tools = build_tools(&tools, false).expect("build tools");
+        let tools = build_tools(&tools, false, ClaudeCodeProfile::Full).expect("build tools");
 
         assert_eq!(
             tools

@@ -1877,9 +1877,16 @@ async fn drain_in_flight(
     }
 
     if turn_context.tools_config.harness.is_kimi_cli() {
-        for tool_future in futures {
-            record_tool_response_result(tool_future.await, sess.clone(), turn_context.clone())
-                .await;
+        let handles = futures.into_iter().map(tokio::spawn).collect::<Vec<_>>();
+        for handle in handles {
+            match handle.await {
+                Ok(res) => {
+                    record_tool_response_result(res, sess.clone(), turn_context.clone()).await;
+                }
+                Err(err) => {
+                    error_or_panic(format!("in-flight tool future failed during drain: {err}"));
+                }
+            }
         }
         return Ok(());
     }
@@ -2258,7 +2265,10 @@ async fn try_run_sampling_request(
                             .await;
                     }
                 } else {
-                    error_or_panic("OutputTextDelta without active item".to_string());
+                    warn!(
+                        delta_length = delta.len(),
+                        "OutputTextDelta without active item; ignoring orphan streamed delta"
+                    );
                 }
             }
             ResponseEvent::ToolCallInputDelta {

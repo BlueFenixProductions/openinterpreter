@@ -113,12 +113,16 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::harness::claude_code::CLAUDE_CODE_APP_HEADER;
+use crate::harness::claude_code::CLAUDE_CODE_BARE_BETA_HEADER;
+use crate::harness::claude_code::CLAUDE_CODE_BARE_TITLE_BETA_HEADER;
 use crate::harness::claude_code::CLAUDE_CODE_BETA_HEADER;
 use crate::harness::claude_code::CLAUDE_CODE_STARTUP_HEAD_USER_AGENT;
 use crate::harness::claude_code::CLAUDE_CODE_TITLE_BETA_HEADER;
 use crate::harness::claude_code::CLAUDE_CODE_USER_AGENT;
-use crate::harness::claude_code::build_request as build_claude_code_request;
-use crate::harness::claude_code::build_title_request as build_claude_code_title_request;
+use crate::harness::claude_code::ClaudeCodeProfile;
+use crate::harness::claude_code::build_request_for_profile as build_claude_code_request;
+use crate::harness::claude_code::build_title_request_for_profile as build_claude_code_title_request;
+use crate::harness::deepseek_tui::build_request as build_deepseek_tui_request;
 use crate::harness::guidance::guidance_for_harness;
 use crate::harness::kimi_cli::build_request as build_kimi_cli_request;
 use crate::harness::minimal::build_request as build_minimal_request;
@@ -127,6 +131,9 @@ use crate::harness::routing::ChatHarnessRoute;
 use crate::harness::routing::MessagesHarnessRoute;
 use crate::harness::routing::StreamTransportRoute;
 use crate::harness::routing::resolve_stream_transport_route;
+use crate::harness::swe_agent::build_request as build_swe_agent_request;
+use crate::harness::swe_agent::inject_action_calls as inject_swe_agent_action_calls;
+use crate::harness::swe_agent::prompt_has_submit_review as swe_agent_prompt_has_submit_review;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_api::map_api_error;
 use codex_feedback::FeedbackRequestTags;
@@ -1392,6 +1399,11 @@ impl ModelClientSession {
                     .ok_or(err)?,
             };
             let request_auth_mode = auth_mode.or(Some(AuthMode::ApiKey));
+            let claude_code_profile = if self.client.state.harness.is_claude_code_bare() {
+                ClaudeCodeProfile::Bare
+            } else {
+                ClaudeCodeProfile::Full
+            };
             let mut api_provider = self.client.state.provider.api_provider().await?;
             let is_startup_preflight = self.send_claude_code_startup_preflight(&api_provider).await;
             let mut query_params = api_provider.query_params.take().unwrap_or_default();
@@ -1405,7 +1417,11 @@ impl ModelClientSession {
             );
             extra_headers.insert(
                 "anthropic-beta",
-                HeaderValue::from_static(CLAUDE_CODE_BETA_HEADER),
+                HeaderValue::from_static(if claude_code_profile.is_bare() {
+                    CLAUDE_CODE_BARE_BETA_HEADER
+                } else {
+                    CLAUDE_CODE_BETA_HEADER
+                }),
             );
             extra_headers.insert("x-stainless-arch", HeaderValue::from_static("x64"));
             extra_headers.insert("x-stainless-lang", HeaderValue::from_static("js"));
@@ -1465,23 +1481,30 @@ impl ModelClientSession {
                 effort,
                 &claude_code_session_id,
                 Some(&self.client.state.session_source),
+                claude_code_profile,
             )
             .map_err(|err| {
                 CodexErr::InvalidRequest(format!("invalid claude-code request: {err}"))
             })?;
             if is_startup_preflight && !request.tools.is_empty() {
-                let title_request =
-                    build_claude_code_title_request(prompt, model_info, &claude_code_session_id)
-                        .map_err(|err| {
-                            CodexErr::InvalidRequest(format!(
-                                "invalid claude-code title request: {err}"
-                            ))
-                        })?;
+                let title_request = build_claude_code_title_request(
+                    prompt,
+                    model_info,
+                    &claude_code_session_id,
+                    claude_code_profile,
+                )
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("invalid claude-code title request: {err}"))
+                })?;
                 if let Some(title_request) = title_request {
                     let mut title_headers = extra_headers.clone();
                     title_headers.insert(
                         "anthropic-beta",
-                        HeaderValue::from_static(CLAUDE_CODE_TITLE_BETA_HEADER),
+                        HeaderValue::from_static(if claude_code_profile.is_bare() {
+                            CLAUDE_CODE_BARE_TITLE_BETA_HEADER
+                        } else {
+                            CLAUDE_CODE_TITLE_BETA_HEADER
+                        }),
                     );
                     match ApiAnthropicMessagesClient::new(
                         ReqwestTransport::new(build_reqwest_client()),
@@ -1616,6 +1639,10 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
     ) -> Result<ResponseStream> {
         match route {
+            ChatHarnessRoute::DeepSeekTui => {
+                self.stream_deepseek_tui_api(prompt, model_info, session_telemetry)
+                    .await
+            }
             ChatHarnessRoute::KimiCli => {
                 self.stream_kimi_cli_api(prompt, model_info, session_telemetry, effort)
                     .await
@@ -1627,6 +1654,99 @@ impl ModelClientSession {
             ChatHarnessRoute::QwenCode => {
                 self.stream_qwen_code_api(prompt, model_info, session_telemetry, effort)
                     .await
+            }
+            ChatHarnessRoute::SweAgent => {
+                self.stream_swe_agent_api(prompt, model_info, session_telemetry)
+                    .await
+            }
+        }
+    }
+
+    #[instrument(
+        name = "model_client.stream_deepseek_tui_api",
+        level = "info",
+        skip_all,
+        fields(
+            model = %model_info.slug,
+            wire_api = %self.client.state.provider.info().wire_api,
+            transport = "chat_http",
+            http.method = "POST",
+            api.path = "chat/completions"
+        )
+    )]
+    async fn stream_deepseek_tui_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+    ) -> Result<ResponseStream> {
+        let auth_manager = self.client.state.provider.auth_manager();
+        let mut auth_recovery = auth_manager
+            .as_ref()
+            .map(AuthManager::unauthorized_recovery);
+        let mut pending_retry = PendingUnauthorizedRetry::default();
+        loop {
+            let auth = self.client.state.provider.auth().await;
+            let api_provider = self.client.state.provider.api_provider().await?;
+            let api_auth = self.client.state.provider.api_auth().await?;
+            let request_auth_context = AuthRequestTelemetryContext::new(
+                auth.as_ref().map(CodexAuth::auth_mode),
+                api_auth.as_ref(),
+                pending_retry,
+            );
+            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
+                session_telemetry,
+                request_auth_context,
+                RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
+                self.client.state.auth_env_telemetry.clone(),
+            );
+            let guided_prompt = prompt_with_harness_guidance(
+                prompt,
+                &self.client.state.harness,
+                self.client.state.harness_guidance,
+            );
+            let (request_body, tool_kinds) = build_deepseek_tui_request(&guided_prompt, model_info)
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("invalid deepseek-tui request: {err}"))
+                })?;
+            let options = ApiResponsesOptions {
+                conversation_id: Some(self.client.state.conversation_id.to_string()),
+                session_source: Some(self.client.state.session_source.clone()),
+                extra_headers: ApiHeaderMap::new(),
+                compression: Compression::None,
+                turn_state: None,
+            };
+            let client = ChatCompletionsCompatClient::new(
+                ReqwestTransport::new(build_reqwest_client()),
+                api_provider,
+                api_auth,
+            )
+            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            match client
+                .stream_chat_request_value(request_body, tool_kinds, options)
+                .await
+            {
+                Ok(stream) => {
+                    let (stream, _) = map_response_stream(
+                        stream,
+                        session_telemetry.clone(),
+                        InferenceTraceAttempt::disabled(),
+                    );
+                    return Ok(stream);
+                }
+                Err(ApiError::Transport(
+                    unauthorized_transport @ TransportError::Http { status, .. },
+                )) if status == StatusCode::UNAUTHORIZED => {
+                    pending_retry = PendingUnauthorizedRetry::from_recovery(
+                        handle_unauthorized(
+                            unauthorized_transport,
+                            &mut auth_recovery,
+                            session_telemetry,
+                        )
+                        .await?,
+                    );
+                }
+                Err(err) => return Err(map_api_error(err)),
             }
         }
     }
@@ -1803,6 +1923,98 @@ impl ModelClientSession {
                         InferenceTraceAttempt::disabled(),
                     );
                     return Ok(stream);
+                }
+                Err(ApiError::Transport(
+                    unauthorized_transport @ TransportError::Http { status, .. },
+                )) if status == StatusCode::UNAUTHORIZED => {
+                    pending_retry = PendingUnauthorizedRetry::from_recovery(
+                        handle_unauthorized(
+                            unauthorized_transport,
+                            &mut auth_recovery,
+                            session_telemetry,
+                        )
+                        .await?,
+                    );
+                }
+                Err(err) => return Err(map_api_error(err)),
+            }
+        }
+    }
+
+    #[instrument(
+        name = "model_client.stream_swe_agent_api",
+        level = "info",
+        skip_all,
+        fields(
+            model = %model_info.slug,
+            wire_api = %self.client.state.provider.info().wire_api,
+            transport = "chat_http",
+            http.method = "POST",
+            api.path = "chat/completions"
+        )
+    )]
+    async fn stream_swe_agent_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+    ) -> Result<ResponseStream> {
+        let auth_manager = self.client.state.provider.auth_manager();
+        let mut auth_recovery = auth_manager
+            .as_ref()
+            .map(AuthManager::unauthorized_recovery);
+        let mut pending_retry = PendingUnauthorizedRetry::default();
+        loop {
+            let auth = self.client.state.provider.auth().await;
+            let api_provider = self.client.state.provider.api_provider().await?;
+            let api_auth = self.client.state.provider.api_auth().await?;
+            let request_auth_context = AuthRequestTelemetryContext::new(
+                auth.as_ref().map(CodexAuth::auth_mode),
+                api_auth.as_ref(),
+                pending_retry,
+            );
+            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
+                session_telemetry,
+                request_auth_context,
+                RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
+                self.client.state.auth_env_telemetry.clone(),
+            );
+            let guided_prompt = prompt_with_harness_guidance(
+                prompt,
+                &self.client.state.harness,
+                self.client.state.harness_guidance,
+            );
+            let (request_body, tool_kinds) = build_swe_agent_request(&guided_prompt, model_info)
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("invalid swe-agent request: {err}"))
+                })?;
+            let options = ApiResponsesOptions {
+                conversation_id: Some(self.client.state.conversation_id.to_string()),
+                session_source: Some(self.client.state.session_source.clone()),
+                extra_headers: ApiHeaderMap::new(),
+                compression: Compression::None,
+                turn_state: None,
+            };
+            let client = ChatCompletionsCompatClient::new(
+                ReqwestTransport::new(build_reqwest_client()),
+                api_provider,
+                api_auth,
+            )
+            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            match client
+                .stream_chat_request_value(request_body, tool_kinds, options)
+                .await
+            {
+                Ok(stream) => {
+                    let (stream, _) = map_response_stream(
+                        stream,
+                        session_telemetry.clone(),
+                        InferenceTraceAttempt::disabled(),
+                    );
+                    return Ok(inject_swe_agent_action_calls(
+                        stream,
+                        swe_agent_prompt_has_submit_review(&guided_prompt),
+                    ));
                 }
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },

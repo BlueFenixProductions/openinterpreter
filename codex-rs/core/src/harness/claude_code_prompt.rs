@@ -257,6 +257,20 @@ pub(super) fn build_system_prompt(
     body
 }
 
+pub(super) fn build_bare_system_prompt(prompt: &Prompt) -> String {
+    let cwd = prompt
+        .cwd
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let mut body = format!("CWD: {cwd}\nDate: {}", chrono::Local::now().date_naive());
+    if let Some(git_status) = prompt.cwd.as_deref().and_then(claude_code_git_status) {
+        body.push_str("\n\n");
+        body.push_str(git_status.as_str());
+    }
+    body
+}
+
 const CLAUDE_CODE_CHILD_AGENT_SYSTEM_PROMPT_PREFIX: &str = r#"You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.
 
 Your strengths:
@@ -376,10 +390,15 @@ fn claude_code_git_status(cwd: &Path) -> Option<String> {
         .and_then(|branch| branch.strip_prefix("origin/").map(ToString::to_string))
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| "main".to_string());
-    let status = run_git(cwd, ["status", "--short"]).unwrap_or_default();
+    let git_user = run_git(cwd, ["config", "user.name"])
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let status = run_git(cwd, ["status", "--short"])
+        .filter(|status| !status.is_empty())
+        .unwrap_or_else(|| "(clean)".to_string());
     let recent_commits = run_git(cwd, ["log", "--oneline", "-5"]).unwrap_or_default();
     Some(format!(
-        "gitStatus: This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.\n\nCurrent branch: {branch}\n\nMain branch (you will usually use this for PRs): {main_branch}\n\nStatus:\n{status}\n\nRecent commits:\n{recent_commits}"
+        "gitStatus: This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.\n\nCurrent branch: {branch}\n\nMain branch (you will usually use this for PRs): {main_branch}\n\nGit user: {git_user}\n\nStatus:\n{status}\n\nRecent commits:\n{recent_commits}"
     ))
 }
 

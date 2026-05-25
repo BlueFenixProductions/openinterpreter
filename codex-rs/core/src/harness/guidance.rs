@@ -7,8 +7,11 @@ pub(crate) fn guidance_for_harness(harness: &Harness) -> Option<&'static str> {
         Harness::KimiCli => Some(KIMI_CLI_GUIDANCE),
         Harness::Native
         | Harness::ClaudeCode
+        | Harness::ClaudeCodeBare
+        | Harness::DeepSeekTui
         | Harness::Minimal
         | Harness::QwenCode
+        | Harness::SweAgent
         | Harness::Other(_) => None,
     }
 }

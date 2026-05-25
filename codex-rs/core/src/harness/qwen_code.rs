@@ -16,7 +16,7 @@ pub(crate) fn build_request(
     model_info: &ModelInfo,
     _reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     _conversation_id: &str,
-    yolo_mode: bool,
+    _yolo_mode: bool,
 ) -> Result<(Value, ToolKinds), serde_json::Error> {
     let mut messages = vec![
         json!({
@@ -30,7 +30,7 @@ pub(crate) fn build_request(
         }),
     ];
     messages.extend(build_qwen_messages(&prompt.get_formatted_input())?);
-    let tools = super::kimi_cli::build_tools(&prompt.tools, yolo_mode)?;
+    let tools = super::kimi_cli::build_tools(&prompt.tools)?;
     let tool_kinds = prompt
         .tools
         .iter()

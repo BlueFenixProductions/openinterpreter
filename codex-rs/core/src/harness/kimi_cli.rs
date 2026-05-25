@@ -31,7 +31,6 @@ const KIMI_CLI_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("kimi_cli_prompt.md")
 const KIMI_LIST_DIR_ROOT_WIDTH: usize = 30;
 const KIMI_LIST_DIR_CHILD_WIDTH: usize = 10;
 const KIMI_AGENTS_MD_MAX_BYTES: usize = 32 * 1024;
-const KIMI_CLI_NON_INTERACTIVE_REMINDER: &str = "<system-reminder>\nYou are running in non-interactive mode. The user cannot answer questions or provide feedback during execution.\n- Do NOT call AskUserQuestion. If you need to make a decision, make your best judgment and proceed.\n- For EnterPlanMode / ExitPlanMode, they will be auto-approved. You can use them normally but expect no user feedback.\n</system-reminder>";
 static KIMI_WORK_DIR_LS_CACHE: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
@@ -41,18 +40,16 @@ pub(crate) fn build_request(
     reasoning_effort: Option<ReasoningEffort>,
     conversation_id: &str,
     session_source: Option<&SessionSource>,
-    yolo_mode: bool,
+    _yolo_mode: bool,
 ) -> Result<(Value, ToolKinds), serde_json::Error> {
     let system_prompt = build_system_prompt(prompt, session_source, conversation_id);
+    let prompt_cache_key = kimi_prompt_cache_key(conversation_id);
     let mut messages = vec![json!({
         "role": "system",
         "content": system_prompt,
     })];
     messages.extend(build_messages(&prompt.get_formatted_input())?);
-    if matches!(session_source, Some(SessionSource::Exec)) {
-        append_non_interactive_reminder(&mut messages);
-    }
-    let tools = build_tools(&prompt.tools, yolo_mode)?;
+    let tools = build_tools(&prompt.tools)?;
     let tool_kinds = prompt
         .tools
         .iter()
@@ -63,21 +60,35 @@ pub(crate) fn build_request(
             "model": model_info.slug,
             "messages": messages,
             "max_tokens": KIMI_CLI_DEFAULT_MAX_TOKENS,
-            "prompt_cache_key": conversation_id,
+            "prompt_cache_key": prompt_cache_key,
             "stream": true,
             "stream_options": {
                 "include_usage": true,
             },
             "tools": tools,
     });
-    if model_info.reasoning_control == ReasoningControl::ThinkingToggle {
-        request["thinking"] = json!({
-            "type": "disabled",
-        });
+    if reasoning_effort.is_some() {
         apply_reasoning_effort(&mut request, reasoning_effort);
+    }
+    if model_info.reasoning_control == ReasoningControl::ThinkingToggle {
+        request
+            .as_object_mut()
+            .expect("request is an object")
+            .entry("thinking".to_string())
+            .or_insert_with(|| json!({ "type": "disabled" }));
     }
 
     Ok((request, tool_kinds))
+}
+
+fn kimi_prompt_cache_key(conversation_id: &str) -> String {
+    if let Ok(value) = std::env::var("OPEN_INTERPRETER_KIMI_PROMPT_CACHE_KEY_OVERRIDE")
+        && !value.trim().is_empty()
+    {
+        return value;
+    }
+
+    conversation_id.to_string()
 }
 
 fn apply_reasoning_effort(request: &mut Value, reasoning_effort: Option<ReasoningEffort>) {
@@ -161,22 +172,6 @@ fn build_system_prompt(
     rendered
 }
 
-fn append_non_interactive_reminder(messages: &mut [Value]) {
-    let Some(Value::Object(message)) = messages
-        .iter_mut()
-        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
-    else {
-        return;
-    };
-    let Some(Value::Array(content)) = message.get_mut("content") else {
-        return;
-    };
-    content.push(json!({
-        "type": "text",
-        "text": KIMI_CLI_NON_INTERACTIVE_REMINDER,
-    }));
-}
-
 fn cached_work_dir_listing(conversation_id: &str, work_dir: &Path) -> String {
     let key = format!("{conversation_id}:{}", work_dir.display());
     let mut cache = KIMI_WORK_DIR_LS_CACHE
@@ -188,8 +183,43 @@ fn cached_work_dir_listing(conversation_id: &str, work_dir: &Path) -> String {
         .clone()
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct MessageBuildOptions {
+    pub omitted_reasoning_placeholder: Option<&'static str>,
+    pub compact_function_arguments: bool,
+    pub merge_assistant_text_with_following_tool_calls: bool,
+    pub preserve_empty_tool_output: bool,
+}
+
+impl MessageBuildOptions {
+    pub fn kimi_cli() -> Self {
+        Self {
+            omitted_reasoning_placeholder: None,
+            compact_function_arguments: false,
+            merge_assistant_text_with_following_tool_calls: false,
+            preserve_empty_tool_output: false,
+        }
+    }
+
+    pub fn deepseek_tui() -> Self {
+        Self {
+            omitted_reasoning_placeholder: Some("(reasoning omitted)"),
+            compact_function_arguments: true,
+            merge_assistant_text_with_following_tool_calls: true,
+            preserve_empty_tool_output: true,
+        }
+    }
+}
+
 pub(super) fn build_messages(
     items: &[ResponseItem],
+) -> Result<impl Iterator<Item = Value>, serde_json::Error> {
+    build_messages_with_options(items, MessageBuildOptions::kimi_cli())
+}
+
+pub(super) fn build_messages_with_options(
+    items: &[ResponseItem],
+    options: MessageBuildOptions,
 ) -> Result<impl Iterator<Item = Value>, serde_json::Error> {
     let mut messages = Vec::new();
     let mut pending_tool_calls = Vec::new();
@@ -214,6 +244,15 @@ pub(super) fn build_messages(
                             &mut awaiting_tool_call_ids,
                             &mut pending_reasoning_content,
                         );
+                        if options.merge_assistant_text_with_following_tool_calls {
+                            push_pending_assistant_content(
+                                &mut messages,
+                                &mut pending_assistant_content,
+                                &mut pending_reasoning_content,
+                            );
+                            pending_assistant_content = Some(message_content);
+                            continue;
+                        }
                         push_pending_assistant_content(
                             &mut messages,
                             &mut pending_assistant_content,
@@ -244,11 +283,10 @@ pub(super) fn build_messages(
                         &mut pending_reasoning_content,
                     );
                     pending_reasoning_content.clear();
-                    let parts = convert_user_message_parts(content);
-                    if !parts.is_empty() {
+                    if let Some(message_content) = convert_user_message_content(content) {
                         messages.push(json!({
                             "role": "user",
-                            "content": Value::Array(parts),
+                            "content": message_content,
                         }));
                     }
                 }
@@ -273,18 +311,23 @@ pub(super) fn build_messages(
                 call_id,
                 ..
             } => {
-                push_pending_assistant_content(
-                    &mut messages,
-                    &mut pending_assistant_content,
-                    &mut pending_reasoning_content,
-                );
+                if !options.merge_assistant_text_with_following_tool_calls {
+                    push_pending_assistant_content(
+                        &mut messages,
+                        &mut pending_assistant_content,
+                        &mut pending_reasoning_content,
+                    );
+                }
                 awaiting_tool_call_ids.clear();
                 pending_tool_calls.push(json!({
                     "type": "function",
                     "id": call_id,
                     "function": {
                         "name": name,
-                        "arguments": arguments,
+                        "arguments": format_function_arguments(
+                            arguments,
+                            options.compact_function_arguments
+                        ),
                     }
                 }));
             }
@@ -294,11 +337,13 @@ pub(super) fn build_messages(
                 input,
                 ..
             } => {
-                push_pending_assistant_content(
-                    &mut messages,
-                    &mut pending_assistant_content,
-                    &mut pending_reasoning_content,
-                );
+                if !options.merge_assistant_text_with_following_tool_calls {
+                    push_pending_assistant_content(
+                        &mut messages,
+                        &mut pending_assistant_content,
+                        &mut pending_reasoning_content,
+                    );
+                }
                 awaiting_tool_call_ids.clear();
                 pending_tool_calls.push(json!({
                     "type": "function",
@@ -315,11 +360,13 @@ pub(super) fn build_messages(
                 action,
                 ..
             } => {
-                push_pending_assistant_content(
-                    &mut messages,
-                    &mut pending_assistant_content,
-                    &mut pending_reasoning_content,
-                );
+                if !options.merge_assistant_text_with_following_tool_calls {
+                    push_pending_assistant_content(
+                        &mut messages,
+                        &mut pending_assistant_content,
+                        &mut pending_reasoning_content,
+                    );
+                }
                 let call_id = call_id.clone().or_else(|| id.clone()).ok_or_else(|| {
                     serde_json::Error::io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -351,7 +398,7 @@ pub(super) fn build_messages(
                     &mut pending_assistant_content,
                     &mut pending_reasoning_content,
                     call_id,
-                    kimi_tool_output_content(output),
+                    kimi_tool_output_content(output, options),
                 );
             }
             ResponseItem::CustomToolCallOutput {
@@ -364,11 +411,15 @@ pub(super) fn build_messages(
                     &mut pending_assistant_content,
                     &mut pending_reasoning_content,
                     call_id,
-                    kimi_tool_output_content(output),
+                    kimi_tool_output_content(output, options),
                 );
             }
             ResponseItem::Reasoning { content, .. } => {
-                append_reasoning_content(&mut pending_reasoning_content, content.as_deref());
+                append_reasoning_content(
+                    &mut pending_reasoning_content,
+                    content.as_deref(),
+                    options.omitted_reasoning_placeholder,
+                );
             }
             ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
@@ -393,10 +444,7 @@ pub(super) fn build_messages(
     Ok(messages.into_iter())
 }
 
-pub(super) fn build_tools(
-    tools: &[ToolSpec],
-    yolo_mode: bool,
-) -> Result<Vec<Value>, serde_json::Error> {
+pub(super) fn build_tools(tools: &[ToolSpec]) -> Result<Vec<Value>, serde_json::Error> {
     let mut converted = Vec::new();
     for tool in tools {
         let ToolSpec::Function(ResponsesApiTool {
@@ -408,9 +456,6 @@ pub(super) fn build_tools(
         else {
             continue;
         };
-        if yolo_mode && name == "AskUserQuestion" {
-            continue;
-        }
         converted.push(json!({
             "type": "function",
             "function": {
@@ -440,7 +485,6 @@ fn flush_pending_tool_calls(
     );
     let mut message = json!({
         "role": "assistant",
-        "content": [],
         "tool_calls": std::mem::take(pending_tool_calls),
     });
     attach_reasoning_content(&mut message, pending_reasoning_content);
@@ -539,10 +583,20 @@ fn push_tool_output_if_expected(
 fn append_reasoning_content(
     pending_reasoning_content: &mut String,
     content: Option<&[ReasoningItemContent]>,
+    omitted_reasoning_placeholder: Option<&str>,
 ) {
     let Some(content) = content else {
+        if let Some(placeholder) = omitted_reasoning_placeholder {
+            pending_reasoning_content.push_str(placeholder);
+        }
         return;
     };
+    if content.is_empty() {
+        if let Some(placeholder) = omitted_reasoning_placeholder {
+            pending_reasoning_content.push_str(placeholder);
+        }
+        return;
+    }
     for item in content {
         match item {
             ReasoningItemContent::ReasoningText { text } | ReasoningItemContent::Text { text } => {
@@ -550,6 +604,39 @@ fn append_reasoning_content(
             }
         }
     }
+}
+
+fn format_function_arguments(arguments: &str, compact: bool) -> String {
+    if compact {
+        return compact_json_whitespace_preserving_order(arguments);
+    }
+    arguments.to_string()
+}
+
+fn compact_json_whitespace_preserving_order(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in input.chars() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            out.push(ch);
+        } else if !ch.is_whitespace() {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn attach_reasoning_content(message: &mut Value, pending_reasoning_content: &mut String) {
@@ -566,6 +653,10 @@ fn attach_reasoning_content(message: &mut Value, pending_reasoning_content: &mut
 
 fn convert_message_content(content: &[ContentItem]) -> Option<Value> {
     collapse_message_parts(convert_message_parts(content))
+}
+
+fn convert_user_message_content(content: &[ContentItem]) -> Option<Value> {
+    collapse_message_parts(convert_user_message_parts(content))
 }
 
 fn convert_message_parts(content: &[ContentItem]) -> Vec<Value> {
@@ -621,7 +712,10 @@ fn collapse_message_parts(parts: Vec<Value>) -> Option<Value> {
     }
 }
 
-fn kimi_tool_output_content(output: &FunctionCallOutputPayload) -> Value {
+fn kimi_tool_output_content(
+    output: &FunctionCallOutputPayload,
+    options: MessageBuildOptions,
+) -> Value {
     match &output.body {
         codex_protocol::models::FunctionCallOutputBody::Text(text) => {
             if output.success == Some(false) {
@@ -630,7 +724,7 @@ fn kimi_tool_output_content(output: &FunctionCallOutputPayload) -> Value {
                 }
                 return json!(format!("<system>ERROR: {text}</system>"));
             }
-            let text = safe_kimi_tool_text(text);
+            let text = safe_kimi_tool_text(text, options);
             json!(text)
         }
         codex_protocol::models::FunctionCallOutputBody::ContentItems(items) => {
@@ -643,9 +737,13 @@ fn kimi_tool_output_content(output: &FunctionCallOutputPayload) -> Value {
     }
 }
 
-fn safe_kimi_tool_text(text: &str) -> String {
+fn safe_kimi_tool_text(text: &str, options: MessageBuildOptions) -> String {
     if text.trim().is_empty() {
-        "<system>Tool output is empty.</system>".to_string()
+        if options.preserve_empty_tool_output {
+            String::new()
+        } else {
+            "<system>Tool output is empty.</system>".to_string()
+        }
     } else if text.contains('\0') {
         "<system>Tool returned non-text content.</system>".to_string()
     } else {
@@ -667,7 +765,7 @@ fn kimi_output_content_item(item: &FunctionCallOutputContentItem) -> Value {
             "text": if is_kimi_system_tool_text(text) {
                 text.clone()
             } else {
-                safe_kimi_tool_text(text)
+                safe_kimi_tool_text(text, MessageBuildOptions::kimi_cli())
             },
         }),
         FunctionCallOutputContentItem::InputImage { image_url, .. } => json!({
@@ -834,40 +932,36 @@ fn discover_kimi_skills(work_dir: &Path) -> String {
         std::env::var_os("KIMI_CLI_SOURCE_DIR").map(PathBuf::from),
     )
     .into_iter()
-    .flat_map(|root| discover_skills_in_root(&root))
+    .flat_map(|root| discover_skills_in_root(&root.path, root.scope))
     .filter(|skill| seen.insert(skill.name.to_ascii_lowercase()))
     .collect::<Vec<_>>();
     skills.sort_by(|left, right| left.name.cmp(&right.name));
     if skills.is_empty() {
         builtin_kimi_skill_listing().to_string()
     } else {
-        skills
-            .into_iter()
-            .map(|skill| {
-                format!(
-                    "- {}\n  - Path: {}\n  - Description: {}",
-                    skill.name,
-                    skill.path.display(),
-                    skill.description
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        format_kimi_skills_for_prompt(skills)
     }
 }
 
 fn builtin_kimi_skill_listing() -> &'static str {
-    "- kimi-cli-help\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/kimi-cli-help/SKILL.md\n  - Description: Answer Kimi Code CLI usage, configuration, and troubleshooting questions. Use when user asks about Kimi Code CLI installation, setup, configuration, slash commands, keyboard shortcuts, MCP integration, providers, environment variables, how something works internally, or any questions about Kimi Code CLI itself.\n- skill-creator\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/skill-creator/SKILL.md\n  - Description: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Kimi's capabilities with specialized knowledge, workflows, or tool integrations."
+    "### Built-in\n- kimi-cli-help\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/kimi-cli-help/SKILL.md\n  - Description: Answer Kimi Code CLI usage, configuration, and troubleshooting questions. Use when user asks about Kimi Code CLI installation, setup, configuration, slash commands, keyboard shortcuts, MCP integration, providers, environment variables, how something works internally, or any questions about Kimi Code CLI itself.\n- skill-creator\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/skill-creator/SKILL.md\n  - Description: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Kimi's capabilities with specialized knowledge, workflows, or tool integrations."
 }
 
 fn kimi_skill_roots(
     work_dir: &Path,
     home_dir: Option<PathBuf>,
     kimi_source_dir: Option<PathBuf>,
-) -> Vec<PathBuf> {
+) -> Vec<KimiSkillRoot> {
     let mut roots = Vec::new();
-    if let Some(root) = builtin_kimi_skills_root(kimi_source_dir.as_deref()) {
-        roots.push(root);
+    if let Some(root) = first_existing_dir([
+        work_dir.join(".kimi/skills"),
+        work_dir.join(".claude/skills"),
+        work_dir.join(".codex/skills"),
+    ]) {
+        roots.push(KimiSkillRoot::new(root, KimiSkillScope::Project));
+    }
+    if let Some(root) = first_existing_dir([work_dir.join(".agents/skills")]) {
+        roots.push(KimiSkillRoot::new(root, KimiSkillScope::Project));
     }
     if let Some(home) = home_dir {
         if let Some(root) = first_existing_dir([
@@ -875,26 +969,49 @@ fn kimi_skill_roots(
             home.join(".claude/skills"),
             home.join(".codex/skills"),
         ]) {
-            roots.push(root);
+            roots.push(KimiSkillRoot::new(root, KimiSkillScope::User));
         }
         if let Some(root) = first_existing_dir([
             home.join(".config/agents/skills"),
             home.join(".agents/skills"),
         ]) {
-            roots.push(root);
+            roots.push(KimiSkillRoot::new(root, KimiSkillScope::User));
         }
     }
-    if let Some(root) = first_existing_dir([
-        work_dir.join(".kimi/skills"),
-        work_dir.join(".claude/skills"),
-        work_dir.join(".codex/skills"),
-    ]) {
-        roots.push(root);
-    }
-    if let Some(root) = first_existing_dir([work_dir.join(".agents/skills")]) {
-        roots.push(root);
+    if let Some(root) = builtin_kimi_skills_root(kimi_source_dir.as_deref()) {
+        roots.push(KimiSkillRoot::new(root, KimiSkillScope::BuiltIn));
     }
     roots
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KimiSkillScope {
+    Project,
+    User,
+    Extra,
+    BuiltIn,
+}
+
+impl KimiSkillScope {
+    fn heading(self) -> &'static str {
+        match self {
+            KimiSkillScope::Project => "Project",
+            KimiSkillScope::User => "User",
+            KimiSkillScope::Extra => "Extra",
+            KimiSkillScope::BuiltIn => "Built-in",
+        }
+    }
+}
+
+struct KimiSkillRoot {
+    path: PathBuf,
+    scope: KimiSkillScope,
+}
+
+impl KimiSkillRoot {
+    fn new(path: PathBuf, scope: KimiSkillScope) -> Self {
+        Self { path, scope }
+    }
 }
 
 fn builtin_kimi_skills_root(kimi_source_dir: Option<&Path>) -> Option<PathBuf> {
@@ -909,7 +1026,7 @@ where
     candidates.into_iter().find(|candidate| candidate.is_dir())
 }
 
-fn discover_skills_in_root(root: &Path) -> Vec<KimiSkill> {
+fn discover_skills_in_root(root: &Path, scope: KimiSkillScope) -> Vec<KimiSkill> {
     let mut skills = fs::read_dir(root)
         .ok()
         .into_iter()
@@ -917,6 +1034,10 @@ fn discover_skills_in_root(root: &Path) -> Vec<KimiSkill> {
         .filter_map(|entry| {
             let skill_md = entry.path().join("SKILL.md");
             parse_kimi_skill(&skill_md)
+        })
+        .map(|mut skill| {
+            skill.scope = scope;
+            skill
         })
         .collect::<Vec<_>>();
     skills.sort_by(|left, right| left.name.cmp(&right.name));
@@ -930,6 +1051,7 @@ fn parse_kimi_skill(skill_md: &Path) -> Option<KimiSkill> {
         name,
         description,
         path: skill_md.to_path_buf(),
+        scope: KimiSkillScope::BuiltIn,
     })
 }
 
@@ -976,11 +1098,39 @@ fn parse_kimi_skill_frontmatter(text: &str) -> Option<(String, String)> {
     Some((name?, description?))
 }
 
+fn format_kimi_skills_for_prompt(skills: Vec<KimiSkill>) -> String {
+    [
+        KimiSkillScope::Project,
+        KimiSkillScope::User,
+        KimiSkillScope::Extra,
+        KimiSkillScope::BuiltIn,
+    ]
+    .into_iter()
+    .filter_map(|scope| {
+        let lines = skills
+            .iter()
+            .filter(|skill| skill.scope == scope)
+            .map(|skill| {
+                format!(
+                    "- {}\n  - Path: {}\n  - Description: {}",
+                    skill.name,
+                    skill.path.display(),
+                    skill.description
+                )
+            })
+            .collect::<Vec<_>>();
+        (!lines.is_empty()).then(|| format!("### {}\n{}", scope.heading(), lines.join("\n")))
+    })
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct KimiSkill {
     name: String,
     description: String,
     path: PathBuf,
+    scope: KimiSkillScope,
 }
 
 fn render_conditional_block(
@@ -1017,6 +1167,11 @@ fn render_conditional_block(
 }
 
 fn current_kimi_now() -> String {
+    if let Ok(value) = std::env::var("OPEN_INTERPRETER_KIMI_NOW_OVERRIDE")
+        && !value.trim().is_empty()
+    {
+        return value;
+    }
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
 }
 
@@ -1097,6 +1252,7 @@ mod tests {
     use super::build_system_prompt;
     use super::builtin_kimi_skill_listing;
     use super::discover_skills_in_root;
+    use super::format_kimi_skills_for_prompt;
     use super::kimi_skill_roots;
     use super::load_kimi_agents_md;
     use super::parse_kimi_skill_frontmatter;
@@ -1137,12 +1293,7 @@ mod tests {
             messages,
             vec![json!({
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "hello",
-                    }
-                ],
+                "content": "hello",
             })]
         );
     }
@@ -1156,7 +1307,7 @@ mod tests {
             /*kimi_source_dir*/ None,
         )
         .into_iter()
-        .flat_map(|root| discover_skills_in_root(&root))
+        .flat_map(|root| discover_skills_in_root(&root.path, root.scope))
         .any(|_| true);
         let listing = if found_skills {
             unreachable!("empty temp fixture should not discover skills")
@@ -1166,7 +1317,7 @@ mod tests {
 
         assert_eq!(
             listing,
-            "- kimi-cli-help\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/kimi-cli-help/SKILL.md\n  - Description: Answer Kimi Code CLI usage, configuration, and troubleshooting questions. Use when user asks about Kimi Code CLI installation, setup, configuration, slash commands, keyboard shortcuts, MCP integration, providers, environment variables, how something works internally, or any questions about Kimi Code CLI itself.\n- skill-creator\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/skill-creator/SKILL.md\n  - Description: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Kimi's capabilities with specialized knowledge, workflows, or tool integrations."
+            "### Built-in\n- kimi-cli-help\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/kimi-cli-help/SKILL.md\n  - Description: Answer Kimi Code CLI usage, configuration, and troubleshooting questions. Use when user asks about Kimi Code CLI installation, setup, configuration, slash commands, keyboard shortcuts, MCP integration, providers, environment variables, how something works internally, or any questions about Kimi Code CLI itself.\n- skill-creator\n  - Path: /tmp/kimi-cli/src/kimi_cli/skills/skill-creator/SKILL.md\n  - Description: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Kimi's capabilities with specialized knowledge, workflows, or tool integrations."
         );
     }
 
@@ -1209,12 +1360,7 @@ mod tests {
             messages,
             vec![json!({
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "$imagegen what is this",
-                    }
-                ],
+                "content": "$imagegen what is this",
             })]
         );
     }
@@ -1260,12 +1406,7 @@ mod tests {
             messages,
             vec![json!({
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "do the task",
-                    }
-                ],
+                "content": "do the task",
             })]
         );
     }
@@ -1375,7 +1516,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_request_omits_reasoning_fields_when_model_has_no_reasoning_control() {
+    fn kimi_request_keeps_reasoning_effort_even_without_catalog_reasoning_control() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
                 id: Some("user".to_string()),
@@ -1400,8 +1541,8 @@ mod tests {
         )
         .expect("build request");
 
-        assert_eq!(request.get("reasoning_effort"), None);
-        assert_eq!(request.get("thinking"), None);
+        assert_eq!(request.get("reasoning_effort"), Some(&json!("high")));
+        assert_eq!(request.get("thinking"), Some(&json!({ "type": "enabled" })));
     }
 
     #[test]
@@ -1437,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_yolo_mode_removes_question_tool_without_prompt_reminder() {
+    fn kimi_yolo_mode_keeps_question_tool_without_prompt_reminder() {
         let ask_user_question = ResponsesApiTool {
             name: "AskUserQuestion".to_string(),
             description: "Ask the user a question.".to_string(),
@@ -1489,16 +1630,13 @@ mod tests {
             !messages[0]["content"]
                 .as_str()
                 .expect("system content")
-                .contains("AskUserQuestion")
+                .contains("You are running in non-interactive mode")
         );
         assert_eq!(
             messages[1],
             json!({
                 "role": "user",
-                "content": [{
-                    "type": "text",
-                    "text": "do the task",
-                }],
+                "content": "do the task",
             })
         );
         let tool_names = request["tools"]
@@ -1507,7 +1645,7 @@ mod tests {
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>();
-        assert_eq!(tool_names, vec!["Shell"]);
+        assert_eq!(tool_names, vec!["AskUserQuestion", "Shell"]);
 
         let (interactive_request, _) = build_request(
             &prompt,
@@ -1597,7 +1735,6 @@ mod tests {
             vec![
                 json!({
                     "role": "assistant",
-                    "content": [],
                     "tool_calls": [
                         {
                             "type": "function",
@@ -1651,7 +1788,6 @@ mod tests {
             vec![
                 json!({
                     "role": "assistant",
-                    "content": [],
                     "reasoning_content": "I need to inspect the files.",
                     "tool_calls": [
                         {
@@ -1771,7 +1907,6 @@ mod tests {
             vec![
                 json!({
                     "role": "assistant",
-                    "content": [],
                     "tool_calls": [
                         {
                             "type": "function",
@@ -1856,7 +1991,6 @@ mod tests {
             vec![
                 json!({
                     "role": "assistant",
-                    "content": [],
                     "tool_calls": [
                         {
                             "type": "function",
@@ -1913,7 +2047,6 @@ mod tests {
             vec![
                 json!({
                     "role": "assistant",
-                    "content": [],
                     "tool_calls": [
                         {
                             "type": "function",
@@ -1973,7 +2106,6 @@ mod tests {
             vec![
                 json!({
                     "role": "assistant",
-                    "content": [],
                     "tool_calls": [
                         {
                             "type": "function",
@@ -2087,22 +2219,14 @@ Body
 
         let skills = kimi_skill_roots(&work_dir, Some(home.clone()), None)
             .into_iter()
-            .flat_map(|root| discover_skills_in_root(&root))
-            .map(|skill| {
-                format!(
-                    "- {}\n  - Path: {}\n  - Description: {}",
-                    skill.name,
-                    skill.path.display(),
-                    skill.description
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .flat_map(|root| discover_skills_in_root(&root.path, root.scope))
+            .collect::<Vec<_>>();
+        let skills = format_kimi_skills_for_prompt(skills);
 
         assert_eq!(
             skills,
             format!(
-                "- demo-guide\n  - Path: {}\n  - Description: Read the demo creation workflow guide\n- generic-guide\n  - Path: {}\n  - Description: Read the generic workflow guide",
+                "### User\n- demo-guide\n  - Path: {}\n  - Description: Read the demo creation workflow guide\n- generic-guide\n  - Path: {}\n  - Description: Read the generic workflow guide",
                 home.join(".claude/skills/demo-guide/SKILL.md").display(),
                 home.join(".agents/skills/generic-guide/SKILL.md").display(),
             )

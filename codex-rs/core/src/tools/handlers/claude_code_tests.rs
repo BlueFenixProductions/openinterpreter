@@ -311,6 +311,9 @@ async fn edit_updates_matching_text() {
     tokio::fs::write(path.as_path(), "before\nOLD_VALUE\nafter\n")
         .await
         .expect("write file");
+    session
+        .record_claude_code_current_file(path.as_path())
+        .await;
 
     let output = ClaudeEditHandler
         .handle(invocation(
@@ -351,6 +354,9 @@ async fn edit_replace_all_uses_claude_message() {
     tokio::fs::write(path.as_path(), "TOKEN_OLD\nTOKEN_OLD\n")
         .await
         .expect("write file");
+    session
+        .record_claude_code_current_file(path.as_path())
+        .await;
 
     let output = ClaudeEditHandler
         .handle(invocation(
@@ -391,6 +397,9 @@ async fn edit_trims_new_string_trailing_horizontal_whitespace() {
     tokio::fs::write(path.as_path(), "before\nOLD_VALUE\nafter\n")
         .await
         .expect("write file");
+    session
+        .record_claude_code_current_file(path.as_path())
+        .await;
 
     ClaudeEditHandler
         .handle(invocation(
@@ -412,6 +421,38 @@ async fn edit_trims_new_string_trailing_horizontal_whitespace() {
             .await
             .expect("read edited file"),
         "before\nNEW_VALUE\nNEXT\nafter\n"
+    );
+}
+
+#[tokio::test]
+async fn edit_requires_target_file_to_be_current() {
+    let (session, mut turn) = make_session_and_context().await;
+    set_danger_full_access(&mut turn);
+    let path = turn.cwd.join("edit-unread-target.txt");
+    tokio::fs::write(path.as_path(), "before\nOLD_VALUE\nafter\n")
+        .await
+        .expect("write file");
+
+    let result = ClaudeEditHandler
+        .handle(invocation(
+            session,
+            turn,
+            "Edit",
+            json!({
+                "file_path": path.to_string_lossy(),
+                "old_string": "OLD_VALUE",
+                "new_string": "NEW_VALUE",
+                "replace_all": false
+            }),
+        ))
+        .await;
+    let Err(err) = result else {
+        panic!("edit should require a prior read");
+    };
+
+    assert_eq!(
+        err.to_string(),
+        "File has not been read yet. Read it first before writing to it."
     );
 }
 

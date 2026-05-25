@@ -214,6 +214,9 @@ impl ToolHandler for ClaudeReadHandler {
                 args.limit.unwrap_or(2000),
             )
         };
+        session
+            .record_claude_code_current_file(path.as_path())
+            .await;
         Ok(FunctionToolOutput::from_text(
             formatted,
             Some(!is_large_whole_file),
@@ -307,6 +310,9 @@ impl ToolHandler for ClaudeWriteHandler {
         tokio::fs::write(path.as_path(), args.content)
             .await
             .map_err(|err| FunctionCallError::RespondToModel(format!("Write failed: {err}")))?;
+        session
+            .record_claude_code_current_file(path.as_path())
+            .await;
         Ok(FunctionToolOutput::from_text(
             format!(
                 "File created successfully at: {} (file state is current in your context — no need to Read it back)",
@@ -644,6 +650,11 @@ impl ToolHandler for ClaudeEditHandler {
             effective_turn_file_system_policy(session.as_ref(), turn.as_ref()).await;
         ensure_readable_path(&file_system_policy, turn.as_ref(), &path)?;
         ensure_writable_path(&file_system_policy, turn.as_ref(), &path)?;
+        if !session.claude_code_file_is_current(path.as_path()).await {
+            return Err(FunctionCallError::RespondToModel(
+                "File has not been read yet. Read it first before writing to it.".to_string(),
+            ));
+        }
         let content = tokio::fs::read_to_string(path.as_path())
             .await
             .map_err(|err| FunctionCallError::RespondToModel(format!("Edit failed: {err}")))?;
@@ -651,6 +662,9 @@ impl ToolHandler for ClaudeEditHandler {
         tokio::fs::write(path.as_path(), updated)
             .await
             .map_err(|err| FunctionCallError::RespondToModel(format!("Edit failed: {err}")))?;
+        session
+            .record_claude_code_current_file(path.as_path())
+            .await;
         let message = if args.replace_all.unwrap_or(false) {
             format!(
                 "The file {} has been updated. All occurrences were successfully replaced.",

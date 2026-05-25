@@ -5956,7 +5956,7 @@ async fn openrouter_model_family_defaults_to_matching_harness() -> std::io::Resu
 }
 
 #[tokio::test]
-async fn deepseek_provider_defaults_to_minimal_harness() -> std::io::Result<()> {
+async fn deepseek_provider_defaults_to_deepseek_tui_harness() -> std::io::Result<()> {
     let cwd_temp_dir = TempDir::new().expect("temp dir");
     std::fs::write(cwd_temp_dir.path().join(".git"), "gitdir: nowhere")?;
     let codex_home_temp_dir = TempDir::new().expect("temp dir");
@@ -5998,7 +5998,7 @@ async fn deepseek_provider_defaults_to_minimal_harness() -> std::io::Result<()> 
     )
     .await?;
 
-    assert_eq!(config.harness.as_deref(), Some("minimal"));
+    assert_eq!(config.harness.as_deref(), Some("deepseek-tui"));
     Ok(())
 }
 

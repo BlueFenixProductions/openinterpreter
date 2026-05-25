@@ -39,6 +39,7 @@ use crate::create_close_agent_tool_v1;
 use crate::create_close_agent_tool_v2;
 use crate::create_code_mode_tool;
 use crate::create_create_goal_tool;
+use crate::create_deepseek_tui_tools;
 use crate::create_exec_command_tool;
 use crate::create_followup_task_tool;
 use crate::create_get_goal_tool;
@@ -51,7 +52,7 @@ use crate::create_kimi_cli_fetch_url_tool;
 use crate::create_kimi_cli_glob_tool;
 use crate::create_kimi_cli_grep_tool;
 use crate::create_kimi_cli_read_file_tool;
-use crate::create_kimi_cli_search_web_tool;
+use crate::create_kimi_cli_read_media_file_tool;
 use crate::create_kimi_cli_set_todo_list_tool;
 use crate::create_kimi_cli_shell_tool;
 use crate::create_kimi_cli_str_replace_file_tool;
@@ -111,11 +112,20 @@ pub fn build_tool_registry_plan(
     let mut plan = ToolRegistryPlan::new();
     let exec_permission_approvals_enabled = config.exec_permission_approvals_enabled;
     let using_claude_code = config.harness.is_claude_code();
+    let using_claude_code_bare = config.harness.is_claude_code_bare();
+    let using_deepseek_tui = config.harness.is_deepseek_tui();
     let using_kimi_cli = config.harness.is_kimi_cli();
     let using_minimal = config.harness.is_minimal();
     let using_qwen_code = config.harness.is_qwen_code();
+    let using_swe_agent = config.harness.is_swe_agent();
 
-    if config.code_mode_enabled && !using_claude_code && !using_kimi_cli && !using_qwen_code {
+    if config.code_mode_enabled
+        && !using_claude_code
+        && !using_deepseek_tui
+        && !using_kimi_cli
+        && !using_qwen_code
+        && !using_swe_agent
+    {
         let namespace_descriptions = params
             .tool_namespaces
             .into_iter()
@@ -176,18 +186,20 @@ pub fn build_tool_registry_plan(
 
     if using_claude_code {
         if config.has_environment {
-            if config.claude_code_agent_tool_enabled {
+            if config.claude_code_agent_tool_enabled && !using_claude_code_bare {
                 plan.push_spec(
                     create_claude_code_agent_tool(),
                     /*supports_parallel_tool_calls*/ false,
                     /*code_mode_enabled*/ false,
                 );
             }
-            plan.push_spec(
-                create_claude_code_ask_user_question_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
+            if !using_claude_code_bare {
+                plan.push_spec(
+                    create_claude_code_ask_user_question_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+            }
             plan.push_spec(
                 create_claude_code_bash_tool(),
                 /*supports_parallel_tool_calls*/ false,
@@ -198,67 +210,71 @@ pub fn build_tool_registry_plan(
                 /*supports_parallel_tool_calls*/ false,
                 /*code_mode_enabled*/ false,
             );
-            plan.push_spec(
-                create_claude_code_glob_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
-            plan.push_spec(
-                create_claude_code_grep_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
-            plan.push_spec(
-                create_claude_code_lsp_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
+            if !using_claude_code_bare {
+                plan.push_spec(
+                    create_claude_code_glob_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+                plan.push_spec(
+                    create_claude_code_grep_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+                plan.push_spec(
+                    create_claude_code_lsp_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+            }
             plan.push_spec(
                 create_claude_code_read_tool(),
                 /*supports_parallel_tool_calls*/ false,
                 /*code_mode_enabled*/ false,
             );
-            plan.push_spec(
-                create_claude_code_todo_write_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
-            plan.push_spec(
-                create_claude_code_web_fetch_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
-            plan.push_spec(
-                create_claude_code_web_search_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
-            plan.push_spec(
-                create_claude_code_write_tool(),
-                /*supports_parallel_tool_calls*/ false,
-                /*code_mode_enabled*/ false,
-            );
-            if config.claude_code_agent_tool_enabled {
-                plan.register_handler("Agent", ToolHandlerKind::ClaudeAgent);
+            if !using_claude_code_bare {
+                plan.push_spec(
+                    create_claude_code_todo_write_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+                plan.push_spec(
+                    create_claude_code_web_fetch_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+                plan.push_spec(
+                    create_claude_code_web_search_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+                plan.push_spec(
+                    create_claude_code_write_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    /*code_mode_enabled*/ false,
+                );
+                if config.claude_code_agent_tool_enabled {
+                    plan.register_handler("Agent", ToolHandlerKind::ClaudeAgent);
+                }
+                plan.register_handler("AskUserQuestion", ToolHandlerKind::ClaudeAskUserQuestion);
+                plan.register_handler("CronCreate", ToolHandlerKind::ClaudeCronCreate);
+                plan.register_handler("CronDelete", ToolHandlerKind::ClaudeCronDelete);
+                plan.register_handler("CronList", ToolHandlerKind::ClaudeCronList);
+                plan.register_handler("Glob", ToolHandlerKind::ClaudeGlob);
+                plan.register_handler("Grep", ToolHandlerKind::ClaudeGrep);
+                plan.register_handler("LSP", ToolHandlerKind::ClaudeLsp);
+                plan.register_handler("ScheduleWakeup", ToolHandlerKind::ClaudeScheduleWakeup);
+                plan.register_handler("TodoWrite", ToolHandlerKind::ClaudeTodoWrite);
+                plan.register_handler("WebFetch", ToolHandlerKind::ClaudeWebFetch);
+                plan.register_handler("WebSearch", ToolHandlerKind::ClaudeWebSearch);
+                plan.register_handler("Write", ToolHandlerKind::ClaudeWrite);
             }
-            plan.register_handler("AskUserQuestion", ToolHandlerKind::ClaudeAskUserQuestion);
             plan.register_handler("Bash", ToolHandlerKind::ClaudeBash);
-            plan.register_handler("CronCreate", ToolHandlerKind::ClaudeCronCreate);
-            plan.register_handler("CronDelete", ToolHandlerKind::ClaudeCronDelete);
-            plan.register_handler("CronList", ToolHandlerKind::ClaudeCronList);
             plan.register_handler("Edit", ToolHandlerKind::ClaudeEdit);
-            plan.register_handler("Glob", ToolHandlerKind::ClaudeGlob);
-            plan.register_handler("Grep", ToolHandlerKind::ClaudeGrep);
-            plan.register_handler("LSP", ToolHandlerKind::ClaudeLsp);
             plan.register_handler("Read", ToolHandlerKind::ClaudeRead);
-            plan.register_handler("ScheduleWakeup", ToolHandlerKind::ClaudeScheduleWakeup);
-            plan.register_handler("TodoWrite", ToolHandlerKind::ClaudeTodoWrite);
-            plan.register_handler("WebFetch", ToolHandlerKind::ClaudeWebFetch);
-            plan.register_handler("WebSearch", ToolHandlerKind::ClaudeWebSearch);
-            plan.register_handler("Write", ToolHandlerKind::ClaudeWrite);
         }
 
-        if let Some(mcp_tools) = params.mcp_tools {
+        if let Some(mcp_tools) = params.mcp_tools.filter(|_| !using_claude_code_bare) {
             let mut entries: Vec<&ToolRegistryPlanMcpTool<'_>> = mcp_tools.iter().collect();
             entries.sort_by(|left, right| left.name.display().cmp(&right.name.display()));
 
@@ -299,6 +315,51 @@ pub fn build_tool_registry_plan(
                     );
                 }
             }
+        }
+
+        apply_tool_name_filters(&mut plan, config);
+        return plan;
+    }
+
+    if using_deepseek_tui {
+        if config.has_environment {
+            for spec in create_deepseek_tui_tools() {
+                plan.push_spec(
+                    spec, /*supports_parallel_tool_calls*/ true,
+                    /*code_mode_enabled*/ false,
+                );
+            }
+            plan.register_handler("apply_patch", ToolHandlerKind::DeepSeekTuiApplyPatch);
+            plan.register_handler(
+                "checklist_update",
+                ToolHandlerKind::DeepSeekTuiChecklistUpdate,
+            );
+            plan.register_handler(
+                "checklist_write",
+                ToolHandlerKind::DeepSeekTuiChecklistWrite,
+            );
+            plan.register_handler("todo_update", ToolHandlerKind::DeepSeekTuiChecklistUpdate);
+            plan.register_handler("todo_write", ToolHandlerKind::DeepSeekTuiChecklistWrite);
+            plan.register_handler("edit_file", ToolHandlerKind::DeepSeekTuiEditFile);
+            plan.register_handler("exec_shell", ToolHandlerKind::DeepSeekTuiShell);
+            plan.register_handler("file_search", ToolHandlerKind::DeepSeekTuiFileSearch);
+            plan.register_handler("git_diff", ToolHandlerKind::DeepSeekTuiGitDiff);
+            plan.register_handler("git_status", ToolHandlerKind::DeepSeekTuiGitStatus);
+            plan.register_handler("grep_files", ToolHandlerKind::DeepSeekTuiGrepFiles);
+            plan.register_handler("list_dir", ToolHandlerKind::DeepSeekTuiListDir);
+            plan.register_handler("read_file", ToolHandlerKind::DeepSeekTuiReadFile);
+            plan.register_handler("diagnostics", ToolHandlerKind::DeepSeekTuiDiagnostics);
+            plan.register_handler("request_user_input", ToolHandlerKind::RequestUserInput);
+            plan.register_handler(
+                "tool_search_tool_bm25",
+                ToolHandlerKind::DeepSeekTuiToolSearch,
+            );
+            plan.register_handler(
+                "tool_search_tool_regex",
+                ToolHandlerKind::DeepSeekTuiToolSearch,
+            );
+            plan.register_handler("update_plan", ToolHandlerKind::DeepSeekTuiUpdatePlan);
+            plan.register_handler("write_file", ToolHandlerKind::DeepSeekTuiWriteFile);
         }
 
         apply_tool_name_filters(&mut plan, config);
@@ -348,6 +409,11 @@ pub fn build_tool_registry_plan(
                 /*code_mode_enabled*/ false,
             );
             plan.push_spec(
+                create_kimi_cli_read_media_file_tool(),
+                /*supports_parallel_tool_calls*/ true,
+                /*code_mode_enabled*/ false,
+            );
+            plan.push_spec(
                 create_kimi_cli_glob_tool(),
                 /*supports_parallel_tool_calls*/ true,
                 /*code_mode_enabled*/ false,
@@ -364,11 +430,6 @@ pub fn build_tool_registry_plan(
             );
             plan.push_spec(
                 create_kimi_cli_str_replace_file_tool(),
-                /*supports_parallel_tool_calls*/ true,
-                /*code_mode_enabled*/ false,
-            );
-            plan.push_spec(
-                create_kimi_cli_search_web_tool(),
                 /*supports_parallel_tool_calls*/ true,
                 /*code_mode_enabled*/ false,
             );
@@ -395,11 +456,11 @@ pub fn build_tool_registry_plan(
             plan.register_handler("TaskOutput", ToolHandlerKind::KimiTaskOutput);
             plan.register_handler("TaskStop", ToolHandlerKind::KimiTaskStop);
             plan.register_handler("ReadFile", ToolHandlerKind::KimiReadFile);
+            plan.register_handler("ReadMediaFile", ToolHandlerKind::KimiReadMediaFile);
             plan.register_handler("Glob", ToolHandlerKind::KimiGlob);
             plan.register_handler("Grep", ToolHandlerKind::KimiGrep);
             plan.register_handler("WriteFile", ToolHandlerKind::KimiWriteFile);
             plan.register_handler("StrReplaceFile", ToolHandlerKind::KimiStrReplaceFile);
-            plan.register_handler("SearchWeb", ToolHandlerKind::KimiSearchWeb);
             plan.register_handler("FetchURL", ToolHandlerKind::KimiFetchUrl);
             plan.register_handler("ExitPlanMode", ToolHandlerKind::KimiExitPlanMode);
             plan.register_handler("EnterPlanMode", ToolHandlerKind::KimiEnterPlanMode);
@@ -426,6 +487,13 @@ pub fn build_tool_registry_plan(
             plan.register_handler("edit", ToolHandlerKind::QwenEdit);
         }
 
+        apply_tool_name_filters(&mut plan, config);
+        return plan;
+    }
+
+    if using_swe_agent {
+        plan.register_handler("local_shell", ToolHandlerKind::Shell);
+        plan.register_handler("swe_agent_command", ToolHandlerKind::SweAgentCommand);
         apply_tool_name_filters(&mut plan, config);
         return plan;
     }

@@ -836,6 +836,22 @@ async fn thread_title_from_state_db(
 }
 
 impl Session {
+    pub(crate) async fn record_claude_code_current_file(&self, path: &Path) {
+        let mut state = self.state.lock().await;
+        state.claude_code_current_files.insert(path.to_path_buf());
+        if let Ok(canonical_path) = path.canonicalize() {
+            state.claude_code_current_files.insert(canonical_path);
+        }
+    }
+
+    pub(crate) async fn claude_code_file_is_current(&self, path: &Path) -> bool {
+        let state = self.state.lock().await;
+        state.claude_code_current_files.contains(path)
+            || path.canonicalize().is_ok_and(|canonical_path| {
+                state.claude_code_current_files.contains(&canonical_path)
+            })
+    }
+
     pub(crate) async fn app_server_client_metadata(&self) -> AppServerClientMetadata {
         let state = self.state.lock().await;
         AppServerClientMetadata {

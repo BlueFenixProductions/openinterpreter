@@ -95,6 +95,21 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::ClaudeWriteHandler;
     use crate::tools::handlers::CodeModeExecuteHandler;
     use crate::tools::handlers::CodeModeWaitHandler;
+    use crate::tools::handlers::DeepSeekTuiApplyPatchHandler;
+    use crate::tools::handlers::DeepSeekTuiChecklistUpdateHandler;
+    use crate::tools::handlers::DeepSeekTuiChecklistWriteHandler;
+    use crate::tools::handlers::DeepSeekTuiDiagnosticsHandler;
+    use crate::tools::handlers::DeepSeekTuiEditFileHandler;
+    use crate::tools::handlers::DeepSeekTuiFileSearchHandler;
+    use crate::tools::handlers::DeepSeekTuiGitDiffHandler;
+    use crate::tools::handlers::DeepSeekTuiGitStatusHandler;
+    use crate::tools::handlers::DeepSeekTuiGrepFilesHandler;
+    use crate::tools::handlers::DeepSeekTuiListDirHandler;
+    use crate::tools::handlers::DeepSeekTuiReadFileHandler;
+    use crate::tools::handlers::DeepSeekTuiShellHandler;
+    use crate::tools::handlers::DeepSeekTuiToolSearchHandler;
+    use crate::tools::handlers::DeepSeekTuiUpdatePlanHandler;
+    use crate::tools::handlers::DeepSeekTuiWriteFileHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GoalHandler;
     use crate::tools::handlers::KimiAgentHandler;
@@ -134,6 +149,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::RequestUserInputHandler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
+    use crate::tools::handlers::SweAgentCommandHandler;
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::ToolSearchHandler;
     use crate::tools::handlers::ToolSuggestHandler;
@@ -297,6 +313,51 @@ pub(crate) fn build_specs_with_discoverable_tools(
             ToolHandlerKind::CodeModeWait => {
                 builder.register_handler(handler.name, code_mode_wait_handler.clone());
             }
+            ToolHandlerKind::DeepSeekTuiApplyPatch => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiApplyPatchHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiChecklistUpdate => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiChecklistUpdateHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiChecklistWrite => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiChecklistWriteHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiDiagnostics => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiDiagnosticsHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiEditFile => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiEditFileHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiFileSearch => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiFileSearchHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiGitDiff => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiGitDiffHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiGitStatus => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiGitStatusHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiGrepFiles => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiGrepFilesHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiListDir => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiListDirHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiReadFile => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiReadFileHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiShell => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiShellHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiToolSearch => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiToolSearchHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiUpdatePlan => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiUpdatePlanHandler));
+            }
+            ToolHandlerKind::DeepSeekTuiWriteFile => {
+                builder.register_handler(handler.name, Arc::new(DeepSeekTuiWriteFileHandler));
+            }
             ToolHandlerKind::DynamicTool => {
                 builder.register_handler(handler.name, dynamic_tool_handler.clone());
             }
@@ -434,6 +495,9 @@ pub(crate) fn build_specs_with_discoverable_tools(
             }
             ToolHandlerKind::SpawnAgentV2 => {
                 builder.register_handler(handler.name, Arc::new(SpawnAgentHandlerV2));
+            }
+            ToolHandlerKind::SweAgentCommand => {
+                builder.register_handler(handler.name, Arc::new(SweAgentCommandHandler));
             }
             ToolHandlerKind::TestSync => {
                 builder.register_handler(handler.name, Arc::new(TestSyncHandler));

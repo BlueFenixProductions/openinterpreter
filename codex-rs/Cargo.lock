@@ -2628,6 +2628,7 @@ dependencies = [
  "owo-colors",
  "predicates",
  "pretty_assertions",
+ "reqwest",
  "serde",
  "serde_json",
  "supports-color 3.0.2",

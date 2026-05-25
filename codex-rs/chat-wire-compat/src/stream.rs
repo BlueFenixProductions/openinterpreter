@@ -331,6 +331,12 @@ async fn process_chat_sse(
                         if finalize_reasoning(&tx_event, &mut state).await.is_err() {
                             return;
                         }
+                        if finalize_assistant_message(&tx_event, &mut state)
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
                         if finalize_tool_calls(&tx_event, &mut state, &tool_kinds)
                             .await
                             .is_err()
@@ -380,21 +386,7 @@ async fn finalize_and_complete(
 ) -> Result<(), ApiError> {
     finalize_reasoning(tx_event, state).await?;
 
-    if state.assistant_item_started {
-        tx_event
-            .send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
-                id: Some(state.message_item_id.clone()),
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: state.assistant_text.clone(),
-                }],
-                end_turn: None,
-                phase: None,
-            })))
-            .await
-            .map_err(|_| ApiError::Stream("chat stream channel closed".to_string()))?;
-        state.assistant_item_started = false;
-    }
+    finalize_assistant_message(tx_event, state).await?;
 
     finalize_tool_calls(tx_event, state, tool_kinds).await?;
 
@@ -413,6 +405,29 @@ async fn finalize_and_complete(
         }))
         .await
         .map_err(|_| ApiError::Stream("chat stream channel closed".to_string()))?;
+    Ok(())
+}
+
+async fn finalize_assistant_message(
+    tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+    state: &mut StreamState,
+) -> Result<(), ApiError> {
+    if !state.assistant_item_started {
+        return Ok(());
+    }
+    tx_event
+        .send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
+            id: Some(state.message_item_id.clone()),
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: state.assistant_text.clone(),
+            }],
+            end_turn: None,
+            phase: None,
+        })))
+        .await
+        .map_err(|_| ApiError::Stream("chat stream channel closed".to_string()))?;
+    state.assistant_item_started = false;
     Ok(())
 }
 

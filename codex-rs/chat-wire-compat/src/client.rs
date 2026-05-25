@@ -1,6 +1,7 @@
 use crate::request::ToolKinds;
 use crate::request::convert_request;
 use crate::stream::spawn_chat_stream;
+use bytes::Bytes;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
 use codex_api::Compression;
@@ -16,6 +17,7 @@ use codex_client::RequestBody;
 use codex_client::RequestCompression;
 use codex_client::TransportError;
 use codex_client::run_with_retry;
+use futures::stream;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::Method;
@@ -105,6 +107,29 @@ impl<T: HttpTransport, A: AuthProvider> ChatCompletionsCompatClient<T, A> {
             Compression::Zstd => RequestCompression::Zstd,
         };
 
+        let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+        if !streaming {
+            let response = self
+                .execute_with(
+                    Method::POST,
+                    "chat/completions",
+                    extra_headers,
+                    Some(body),
+                    move |request| {
+                        request.compression = request_compression;
+                    },
+                )
+                .await?;
+            let sse = synthetic_sse_from_chat_completion_response(&response.body)?;
+            let bytes = stream::once(async move { Ok(Bytes::from(sse)) });
+            return Ok(spawn_chat_stream(
+                Box::pin(bytes),
+                self.provider.stream_idle_timeout,
+                self.sse_telemetry.clone(),
+                tool_kinds,
+            ));
+        }
+
         let stream_response = self
             .stream_with(
                 Method::POST,
@@ -127,6 +152,43 @@ impl<T: HttpTransport, A: AuthProvider> ChatCompletionsCompatClient<T, A> {
             self.sse_telemetry.clone(),
             tool_kinds,
         ))
+    }
+
+    async fn execute_with<C>(
+        &self,
+        method: Method,
+        path: &str,
+        extra_headers: HeaderMap,
+        body: Option<Value>,
+        configure: C,
+    ) -> Result<codex_client::Response, ApiError>
+    where
+        C: Fn(&mut Request),
+    {
+        let make_request = || {
+            let mut request = self.make_request(&method, path, &extra_headers, body.as_ref());
+            configure(&mut request);
+            request
+        };
+
+        run_with_retry(
+            self.provider.retry.to_policy(),
+            make_request,
+            |request, attempt| async move {
+                let start = std::time::Instant::now();
+                let result = self.transport.execute(request).await;
+                if let Some(telemetry) = self.request_telemetry.as_ref() {
+                    let (status, error) = match &result {
+                        Ok(response) => (Some(response.status), None),
+                        Err(error) => (http_status(error), Some(error)),
+                    };
+                    telemetry.on_request(attempt, status, error, start.elapsed());
+                }
+                result
+            },
+        )
+        .await
+        .map_err(ApiError::Transport)
     }
 
     async fn stream_with<C>(
@@ -181,6 +243,66 @@ impl<T: HttpTransport, A: AuthProvider> ChatCompletionsCompatClient<T, A> {
         add_auth_headers(&self.auth, &mut request.headers);
         request
     }
+}
+
+fn synthetic_sse_from_chat_completion_response(body: &[u8]) -> Result<String, ApiError> {
+    let response: Value =
+        serde_json::from_slice(body).map_err(|error| ApiError::Stream(error.to_string()))?;
+    let id = response
+        .get("id")
+        .cloned()
+        .unwrap_or_else(|| Value::String("chatcmpl-compat".to_string()));
+    let model = response.get("model").cloned().unwrap_or(Value::Null);
+    let usage = response.get("usage").cloned();
+    let choices = response
+        .get("choices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut chunks = Vec::new();
+    for choice in choices {
+        let index = choice
+            .get("index")
+            .cloned()
+            .unwrap_or(Value::Number(0.into()));
+        let message = choice.get("message").cloned().unwrap_or(Value::Null);
+        let mut delta = serde_json::Map::new();
+        if let Some(content) = message.get("content") {
+            delta.insert("content".to_string(), content.clone());
+        }
+        if let Some(reasoning_content) = message.get("reasoning_content") {
+            delta.insert("reasoning_content".to_string(), reasoning_content.clone());
+        }
+        chunks.push(serde_json::json!({
+            "id": id,
+            "model": model,
+            "choices": [{
+                "index": index,
+                "delta": delta,
+                "finish_reason": Value::Null,
+            }],
+        }));
+        chunks.push(serde_json::json!({
+            "id": id,
+            "model": model,
+            "choices": [{
+                "index": index,
+                "delta": {},
+                "finish_reason": choice.get("finish_reason").cloned().unwrap_or(Value::Null),
+            }],
+            "usage": usage,
+        }));
+    }
+
+    let mut sse = String::new();
+    for chunk in chunks {
+        sse.push_str("data: ");
+        sse.push_str(&chunk.to_string());
+        sse.push_str("\n\n");
+    }
+    sse.push_str("data: [DONE]\n\n");
+    Ok(sse)
 }
 
 fn add_auth_headers<A: AuthProvider>(auth: &A, headers: &mut HeaderMap) {

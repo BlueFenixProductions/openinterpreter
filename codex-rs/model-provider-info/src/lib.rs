@@ -206,7 +206,7 @@ pub fn default_harness_for_provider_model(
         || provider_name.contains("deepseek")
         || base_url.contains("api.deepseek.com")
     {
-        return Some("minimal");
+        return Some("deepseek-tui");
     }
 
     None
@@ -233,6 +233,7 @@ mod default_harness_tests {
             ("qwen/qwen3.6-plus", Some("qwen-code")),
             ("moonshotai/kimi-k2.5", Some("kimi-cli")),
             ("anthropic/claude-sonnet-4.6", Some("claude-code")),
+            ("deepseek/deepseek-chat", Some("deepseek-tui")),
             ("openai/gpt-5.1", None),
         ] {
             assert_eq!(

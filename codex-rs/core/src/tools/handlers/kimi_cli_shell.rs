@@ -57,7 +57,10 @@ impl ToolHandler for KimiShellHandler {
     }
 
     async fn is_mutating(&self, _invocation: &ToolInvocation) -> bool {
-        true
+        // Kimi Code launches same-turn Shell calls concurrently, even when the
+        // commands may mutate disk. Keep this ungated so contention, timeouts,
+        // and tool-result ordering match captured provider traffic.
+        false
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -193,7 +196,11 @@ impl ToolHandler for KimiShellHandler {
                 if output.exit_code == 0 {
                     Ok(kimi_shell_success_output(&output, turn.as_ref()))
                 } else {
-                    Ok(kimi_shell_failed_output(&output, turn.as_ref()))
+                    Ok(kimi_shell_failed_output(
+                        &output,
+                        turn.as_ref(),
+                        args.timeout.is_none(),
+                    ))
                 }
             }
             Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Timeout { output })))
@@ -205,7 +212,11 @@ impl ToolHandler for KimiShellHandler {
                         ToolEventStage::Failure(ToolEventFailure::Output(output.clone())),
                     )
                     .await;
-                Ok(kimi_shell_failed_output(&output, turn.as_ref()))
+                Ok(kimi_shell_failed_output(
+                    &output,
+                    turn.as_ref(),
+                    args.timeout.is_none(),
+                ))
             }
             Err(ToolError::Rejected(message)) => {
                 emitter
@@ -307,6 +318,7 @@ async fn run_background_shell(
         Ok(kimi_shell_failed_output(
             &exec_command_output_to_shell_output(output),
             turn.as_ref(),
+            args.timeout.is_none(),
         ))
     }
 }
@@ -372,9 +384,17 @@ fn kimi_shell_success_output(
     output: &codex_protocol::exec_output::ExecToolCallOutput,
     _turn: &TurnContext,
 ) -> FunctionToolOutput {
-    let output_text = kimi_shell_output_text(output);
+    let KimiShellOutput {
+        text: output_text,
+        truncated,
+    } = kimi_shell_output_text(output);
+    let message = if truncated {
+        "<system>Command executed successfully. Output is truncated to fit in the message.</system>"
+    } else {
+        KIMI_SHELL_EMPTY_OUTPUT
+    };
     let mut body = vec![FunctionCallOutputContentItem::InputText {
-        text: KIMI_SHELL_EMPTY_OUTPUT.to_string(),
+        text: message.to_string(),
     }];
     if !output_text.is_empty() {
         body.push(FunctionCallOutputContentItem::InputText { text: output_text });
@@ -390,19 +410,9 @@ fn kimi_shell_success_output(
 fn kimi_shell_failed_output(
     output: &codex_protocol::exec_output::ExecToolCallOutput,
     _turn: &TurnContext,
+    suppress_timeout_output: bool,
 ) -> FunctionToolOutput {
-    let output_text = kimi_shell_output_text(output);
-    let message = if output.timed_out {
-        format!("Command killed by timeout ({}s)", output.duration.as_secs())
-    } else {
-        format!("Command failed with exit code: {}.", output.exit_code)
-    };
-    let mut body = vec![FunctionCallOutputContentItem::InputText {
-        text: format!("<system>ERROR: {message}</system>"),
-    }];
-    if !output_text.is_empty() {
-        body.push(FunctionCallOutputContentItem::InputText { text: output_text });
-    }
+    let body = kimi_shell_failed_output_body(output, suppress_timeout_output);
     let post_tool_use_response = function_output_items_to_json(&body);
     FunctionToolOutput {
         body,
@@ -411,7 +421,48 @@ fn kimi_shell_failed_output(
     }
 }
 
-fn kimi_shell_output_text(output: &codex_protocol::exec_output::ExecToolCallOutput) -> String {
+fn kimi_shell_failed_output_body(
+    output: &codex_protocol::exec_output::ExecToolCallOutput,
+    suppress_timeout_output: bool,
+) -> Vec<FunctionCallOutputContentItem> {
+    let KimiShellOutput {
+        text: output_text,
+        truncated,
+    } = if output.timed_out && suppress_timeout_output {
+        KimiShellOutput {
+            text: String::new(),
+            truncated: false,
+        }
+    } else {
+        kimi_shell_output_text(output)
+    };
+    let message = if output.timed_out {
+        format!("Command killed by timeout ({}s)", output.duration.as_secs())
+    } else {
+        format!("Command failed with exit code: {}.", output.exit_code)
+    };
+    let message = if truncated {
+        format!("{message} Output is truncated to fit in the message.")
+    } else {
+        message
+    };
+    let mut body = vec![FunctionCallOutputContentItem::InputText {
+        text: format!("<system>ERROR: {message}</system>"),
+    }];
+    if !output_text.is_empty() {
+        body.push(FunctionCallOutputContentItem::InputText { text: output_text });
+    }
+    body
+}
+
+struct KimiShellOutput {
+    text: String,
+    truncated: bool,
+}
+
+fn kimi_shell_output_text(
+    output: &codex_protocol::exec_output::ExecToolCallOutput,
+) -> KimiShellOutput {
     let combined_output = if !output.aggregated_output.text.is_empty() {
         kimi_shell_aggregate_output_text(output)
     } else if output.stderr.text.is_empty() && output.stdout.text.is_empty() {
@@ -423,49 +474,34 @@ fn kimi_shell_output_text(output: &codex_protocol::exec_output::ExecToolCallOutp
     } else {
         format!("{}{}", output.stdout.text, output.stderr.text)
     };
-    truncate_kimi_shell_output(&combined_output)
+    let (text, truncated) = truncate_kimi_shell_output(&combined_output);
+    KimiShellOutput { text, truncated }
 }
 
 fn kimi_shell_aggregate_output_text(
     output: &codex_protocol::exec_output::ExecToolCallOutput,
 ) -> String {
-    let stdout_then_stderr = format!("{}{}", output.stdout.text, output.stderr.text);
-    if !output.stderr.text.is_empty()
-        && output.aggregated_output.text == stdout_then_stderr
-        && kimi_shell_diagnostic_precedes_stdout(&output.stderr.text)
-    {
-        format!("{}{}", output.stderr.text, output.stdout.text)
-    } else {
-        output.aggregated_output.text.clone()
-    }
+    output.aggregated_output.text.clone()
 }
 
-fn kimi_shell_diagnostic_precedes_stdout(stderr: &str) -> bool {
-    stderr.starts_with("/bin/bash:")
-        || stderr.starts_with("bash:")
-        || stderr.starts_with("/bin/sh:")
-        || stderr.starts_with("sh:")
-        || stderr.lines().next().is_some_and(|line| {
-            (line.starts_with("<stdin>:") || line.starts_with("<string>:"))
-                && line.contains("Warning:")
-        })
-}
-
-fn truncate_kimi_shell_output(text: &str) -> String {
+fn truncate_kimi_shell_output(text: &str) -> (String, bool) {
     let mut output = String::new();
     let mut chars_written = 0usize;
+    let mut truncated = false;
 
     for line in split_lines_keepends(text) {
         if chars_written >= KIMI_SHELL_MAX_OUTPUT_CHARS {
+            truncated = true;
             break;
         }
         let remaining_chars = KIMI_SHELL_MAX_OUTPUT_CHARS - chars_written;
         let line_limit = remaining_chars.min(KIMI_SHELL_MAX_LINE_CHARS);
-        let line = truncate_kimi_shell_line(line, line_limit);
+        let (line, line_truncated) = truncate_kimi_shell_line(line, line_limit);
+        truncated |= line_truncated;
         chars_written += line.chars().count();
         output.push_str(&line);
     }
-    output
+    (output, truncated)
 }
 
 fn split_lines_keepends(text: &str) -> Vec<&str> {
@@ -475,9 +511,9 @@ fn split_lines_keepends(text: &str) -> Vec<&str> {
     text.split_inclusive('\n').collect()
 }
 
-fn truncate_kimi_shell_line(line: &str, max_chars: usize) -> String {
+fn truncate_kimi_shell_line(line: &str, max_chars: usize) -> (String, bool) {
     if line.chars().count() <= max_chars {
-        return line.to_string();
+        return (line.to_string(), false);
     }
 
     let linebreak_start = line
@@ -490,7 +526,7 @@ fn truncate_kimi_shell_line(line: &str, max_chars: usize) -> String {
     let suffix_chars = suffix.chars().count();
     let prefix_chars = max_chars.saturating_sub(suffix_chars);
     let prefix = line.chars().take(prefix_chars).collect::<String>();
-    format!("{prefix}{suffix}")
+    (format!("{prefix}{suffix}"), true)
 }
 
 fn function_output_items_to_json(items: &[FunctionCallOutputContentItem]) -> Option<JsonValue> {
@@ -519,8 +555,9 @@ mod tests {
     fn truncates_long_kimi_shell_lines_like_source_builder() {
         let input = format!("{}{}\nnext", "a".repeat(KIMI_SHELL_MAX_LINE_CHARS), "b");
 
-        let output = truncate_kimi_shell_output(&input);
+        let (output, truncated) = truncate_kimi_shell_output(&input);
 
+        assert!(truncated);
         assert!(output.contains(KIMI_SHELL_TRUNCATION_MARKER));
         assert!(output.contains("\nnext"));
         assert!(output.lines().next().unwrap().chars().count() <= KIMI_SHELL_MAX_LINE_CHARS);
@@ -530,8 +567,9 @@ mod tests {
     fn truncates_total_kimi_shell_output() {
         let input = "x\n".repeat(KIMI_SHELL_MAX_OUTPUT_CHARS);
 
-        let output = truncate_kimi_shell_output(&input);
+        let (output, truncated) = truncate_kimi_shell_output(&input);
 
+        assert!(truncated);
         assert_eq!(output.chars().count(), KIMI_SHELL_MAX_OUTPUT_CHARS);
         assert!(!output.ends_with(KIMI_SHELL_TRUNCATION_MARKER));
     }
@@ -545,7 +583,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(kimi_shell_output_text(&output), "stdout\nstderr\n");
+        assert_eq!(kimi_shell_output_text(&output).text, "stdout\nstderr\n");
     }
 
     #[test]
@@ -557,7 +595,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(kimi_shell_output_text(&output), "warning\nstdout\n");
+        assert_eq!(kimi_shell_output_text(&output).text, "warning\nstdout\n");
     }
 
     #[test]
@@ -572,8 +610,8 @@ mod tests {
         };
 
         assert_eq!(
-            kimi_shell_output_text(&output),
-            "/bin/bash: command substitution failed\nstdout\n"
+            kimi_shell_output_text(&output).text,
+            "stdout\n/bin/bash: command substitution failed\n"
         );
     }
 
@@ -589,8 +627,8 @@ mod tests {
         };
 
         assert_eq!(
-            kimi_shell_output_text(&output),
-            "<stdin>:4: UserWarning: warning\nstdout\n"
+            kimi_shell_output_text(&output).text,
+            "stdout\n<stdin>:4: UserWarning: warning\n"
         );
     }
 
@@ -603,7 +641,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(kimi_shell_output_text(&output), "stdout\nstderr\n");
+        assert_eq!(kimi_shell_output_text(&output).text, "stdout\nstderr\n");
     }
 
     #[test]
@@ -615,7 +653,49 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(kimi_shell_output_text(&output), "combined\n");
+        assert_eq!(kimi_shell_output_text(&output).text, "combined\n");
+    }
+
+    #[test]
+    fn default_timeout_failure_omits_partial_output_like_kimi_cli() {
+        let output = ExecToolCallOutput {
+            stdout: StreamOutput::new("partial stdout\n".to_string()),
+            stderr: StreamOutput::new("partial stderr\n".to_string()),
+            aggregated_output: StreamOutput::new("partial stderr\npartial stdout\n".to_string()),
+            duration: std::time::Duration::from_secs(60),
+            timed_out: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            kimi_shell_failed_output_body(&output, /*suppress_timeout_output*/ true),
+            vec![FunctionCallOutputContentItem::InputText {
+                text: "<system>ERROR: Command killed by timeout (60s)</system>".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn explicit_timeout_failure_preserves_partial_output_like_kimi_cli() {
+        let output = ExecToolCallOutput {
+            stderr: StreamOutput::new("warning\n".to_string()),
+            aggregated_output: StreamOutput::new("warning\n".to_string()),
+            duration: std::time::Duration::from_secs(120),
+            timed_out: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            kimi_shell_failed_output_body(&output, /*suppress_timeout_output*/ false),
+            vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "<system>ERROR: Command killed by timeout (120s)</system>".to_string(),
+                },
+                FunctionCallOutputContentItem::InputText {
+                    text: "warning\n".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

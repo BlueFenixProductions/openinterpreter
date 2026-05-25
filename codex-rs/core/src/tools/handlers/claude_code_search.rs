@@ -288,9 +288,13 @@ pub(super) async fn run_rg_command<'a>(
     if output.status.success() || output.status.code() == Some(1) {
         Ok(output)
     } else {
-        Err(FunctionCallError::RespondToModel(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            format!("rg failed with status {}", output.status)
+        } else {
+            stderr
+        };
+        Err(FunctionCallError::RespondToModel(message))
     }
 }
 

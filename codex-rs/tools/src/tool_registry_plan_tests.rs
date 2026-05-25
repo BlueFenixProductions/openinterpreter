@@ -1095,11 +1095,11 @@ fn kimi_cli_root_tool_names_match_official_active_tool_list() {
         "TaskOutput",
         "TaskStop",
         "ReadFile",
+        "ReadMediaFile",
         "Glob",
         "Grep",
         "WriteFile",
         "StrReplaceFile",
-        "SearchWeb",
         "FetchURL",
         "ExitPlanMode",
         "EnterPlanMode",
@@ -1114,11 +1114,11 @@ fn kimi_cli_root_tool_names_match_official_active_tool_list() {
         ("TaskOutput", ToolHandlerKind::KimiTaskOutput),
         ("TaskStop", ToolHandlerKind::KimiTaskStop),
         ("ReadFile", ToolHandlerKind::KimiReadFile),
+        ("ReadMediaFile", ToolHandlerKind::KimiReadMediaFile),
         ("Glob", ToolHandlerKind::KimiGlob),
         ("Grep", ToolHandlerKind::KimiGrep),
         ("WriteFile", ToolHandlerKind::KimiWriteFile),
         ("StrReplaceFile", ToolHandlerKind::KimiStrReplaceFile),
-        ("SearchWeb", ToolHandlerKind::KimiSearchWeb),
         ("FetchURL", ToolHandlerKind::KimiFetchUrl),
         ("ExitPlanMode", ToolHandlerKind::KimiExitPlanMode),
         ("EnterPlanMode", ToolHandlerKind::KimiEnterPlanMode),
@@ -1134,7 +1134,7 @@ fn kimi_cli_root_tool_names_match_official_active_tool_list() {
 }
 
 #[test]
-fn kimi_cli_omits_read_media_file() {
+fn kimi_cli_includes_read_media_file() {
     let model_info = model_info();
     let features = Features::with_defaults();
     let available_models = Vec::new();
@@ -1156,15 +1156,92 @@ fn kimi_cli_omits_read_media_file() {
         &[],
     );
 
+    assert!(
+        tools
+            .iter()
+            .map(ConfiguredToolSpec::name)
+            .any(|name| name == "ReadMediaFile")
+    );
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("ReadMediaFile"),
+        kind: ToolHandlerKind::KimiReadMediaFile,
+    }));
+}
+
+#[test]
+fn deepseek_tui_uses_captured_codewhale_tool_surface() {
+    let model_info = model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    })
+    .with_harness(Some("deepseek-tui"));
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[],
+    );
+
     let actual = tools
         .iter()
         .map(ConfiguredToolSpec::name)
         .collect::<Vec<_>>();
-    assert!(!actual.contains(&"ReadMediaFile"));
-    assert!(!handlers.contains(&ToolHandlerSpec {
-        name: ToolName::plain("ReadMediaFile"),
-        kind: ToolHandlerKind::KimiReadMediaFile,
-    }));
+    let expected_tools = create_deepseek_tui_tools();
+    let expected = expected_tools
+        .iter()
+        .map(ToolSpec::name)
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+
+    for (tool, kind) in [
+        ("apply_patch", ToolHandlerKind::DeepSeekTuiApplyPatch),
+        (
+            "checklist_update",
+            ToolHandlerKind::DeepSeekTuiChecklistUpdate,
+        ),
+        (
+            "checklist_write",
+            ToolHandlerKind::DeepSeekTuiChecklistWrite,
+        ),
+        ("edit_file", ToolHandlerKind::DeepSeekTuiEditFile),
+        ("exec_shell", ToolHandlerKind::DeepSeekTuiShell),
+        ("file_search", ToolHandlerKind::DeepSeekTuiFileSearch),
+        ("git_diff", ToolHandlerKind::DeepSeekTuiGitDiff),
+        ("git_status", ToolHandlerKind::DeepSeekTuiGitStatus),
+        ("diagnostics", ToolHandlerKind::DeepSeekTuiDiagnostics),
+        ("grep_files", ToolHandlerKind::DeepSeekTuiGrepFiles),
+        ("list_dir", ToolHandlerKind::DeepSeekTuiListDir),
+        ("read_file", ToolHandlerKind::DeepSeekTuiReadFile),
+        ("request_user_input", ToolHandlerKind::RequestUserInput),
+        (
+            "tool_search_tool_bm25",
+            ToolHandlerKind::DeepSeekTuiToolSearch,
+        ),
+        (
+            "tool_search_tool_regex",
+            ToolHandlerKind::DeepSeekTuiToolSearch,
+        ),
+        ("todo_update", ToolHandlerKind::DeepSeekTuiChecklistUpdate),
+        ("update_plan", ToolHandlerKind::DeepSeekTuiUpdatePlan),
+        ("write_file", ToolHandlerKind::DeepSeekTuiWriteFile),
+    ] {
+        assert!(
+            handlers.contains(&ToolHandlerSpec {
+                name: ToolName::plain(tool),
+                kind,
+            }),
+            "missing handler for DeepSeek TUI tool {tool}"
+        );
+    }
 }
 
 #[test]

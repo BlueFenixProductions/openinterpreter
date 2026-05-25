@@ -6,6 +6,7 @@
 
 mod app_server_target;
 mod cli;
+mod deepseek_tui_preserve;
 mod event_processor;
 mod event_processor_with_human_output;
 pub(crate) mod event_processor_with_jsonl_output;
@@ -1040,6 +1041,15 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     match event_processor.process_server_notification(notification) {
                         CodexStatus::Running => {}
                         CodexStatus::InitiateShutdown => {
+                            if let Err(err) = deepseek_tui_preserve::maybe_run_preserve_turn(
+                                &config,
+                                &default_cwd,
+                                &prompt_summary,
+                            )
+                            .await
+                            {
+                                warn!("deepseek-tui preserve turn failed: {err}");
+                            }
                             if let Err(err) = request_shutdown(
                                 &client,
                                 &mut request_ids,

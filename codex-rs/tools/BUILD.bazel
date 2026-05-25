@@ -4,6 +4,7 @@ codex_rust_crate(
     name = "tools",
     crate_name = "codex_tools",
     compile_data = [
+        "src/deepseek_tui_tools.json",
         "src/tool_apply_patch.lark",
     ],
 )
