@@ -5,6 +5,7 @@ members = [
     "agent-identity",
     "backend-client",
     "ansi-escape",
+    "acp-server",
     "async-utils",
     "app-server",
     "app-server-client",
@@ -117,6 +118,7 @@ license = "Apache-2.0"
 # Internal
 app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
+codex-acp-server = { path = "acp-server" }
 codex-agent-identity = { path = "agent-identity" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
@@ -219,6 +221,7 @@ mcp_test_support = { path = "mcp-server/tests/common" }
 
 # External
 age = "0.11.1"
+agent-client-protocol = { version = "=0.12.1", features = ["unstable"] }
 allocative = "0.3.3"
 ansi-to-tui = "7.0.0"
 anyhow = "1"

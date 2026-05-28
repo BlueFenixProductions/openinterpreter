@@ -23,6 +23,11 @@ const INTERPRETER_ROOT_TUI_BINARY: &str = if cfg!(windows) {
 } else {
     "interpreter-root-tui"
 };
+const INTERPRETER_ACP_BINARY: &str = if cfg!(windows) {
+    "interpreter-acp.exe"
+} else {
+    "interpreter-acp"
+};
 const STARTUP_MESSAGE_SHOWN_ENV: &str = "OPEN_INTERPRETER_STARTUP_MESSAGE_SHOWN";
 
 fn main() -> anyhow::Result<()> {
@@ -34,6 +39,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(command) = route_top_level_command(&raw_args) {
         return match command {
             TopLevelCommand::Passthrough => exec_interpreter_cli(raw_args),
+            TopLevelCommand::Acp => exec_interpreter_acp(raw_args),
             TopLevelCommand::Kill {
                 force,
                 remote_present,
@@ -61,6 +67,7 @@ fn main() -> anyhow::Result<()> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TopLevelCommand {
     Passthrough,
+    Acp,
     Kill {
         force: bool,
         remote_present: bool,
@@ -150,6 +157,7 @@ fn scan_top_level_command(raw_args: &[OsString]) -> Option<TopLevelCommand> {
             "help" | "resume" | "fork" | "exec" | "mcp" | "update" => {
                 Some(TopLevelCommand::Passthrough)
             }
+            "acp" => Some(TopLevelCommand::Acp),
             "kill" => Some(TopLevelCommand::Kill {
                 force: raw_args[index + 1..]
                     .iter()
@@ -187,6 +195,10 @@ fn resolve_interpreter_root_tui_binary() -> anyhow::Result<PathBuf> {
     resolve_binary(INTERPRETER_ROOT_TUI_BINARY)
 }
 
+fn resolve_interpreter_acp_binary() -> anyhow::Result<PathBuf> {
+    resolve_binary(INTERPRETER_ACP_BINARY)
+}
+
 fn resolve_binary(binary_name: &str) -> anyhow::Result<PathBuf> {
     let current_exe = std::env::current_exe()?;
     let sibling = current_exe
@@ -211,6 +223,10 @@ fn exec_interpreter_root_tui(raw_args: Vec<OsString>) -> anyhow::Result<()> {
         raw_args,
         [(STARTUP_MESSAGE_SHOWN_ENV, "1")],
     )
+}
+
+fn exec_interpreter_acp(_raw_args: Vec<OsString>) -> anyhow::Result<()> {
+    exec_binary(resolve_interpreter_acp_binary()?, Vec::new())
 }
 
 fn exec_binary(program: PathBuf, raw_args: Vec<OsString>) -> anyhow::Result<()> {
@@ -349,6 +365,26 @@ mod tests {
         assert_eq!(
             scan_top_level_command(&[OsString::from("mcp"), OsString::from("--help")]),
             Some(TopLevelCommand::Passthrough)
+        );
+    }
+
+    #[test]
+    fn acp_subcommand_routes_to_acp_server() {
+        assert_eq!(
+            scan_top_level_command(&[OsString::from("acp")]),
+            Some(TopLevelCommand::Acp)
+        );
+    }
+
+    #[test]
+    fn acp_subcommand_after_root_options_routes_to_acp_server() {
+        assert_eq!(
+            scan_top_level_command(&[
+                OsString::from("-c"),
+                OsString::from("model=\"gpt-5.4\""),
+                OsString::from("acp"),
+            ]),
+            Some(TopLevelCommand::Acp)
         );
     }
 
