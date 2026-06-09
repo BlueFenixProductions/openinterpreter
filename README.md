@@ -20,9 +20,6 @@
 
 [![A close-up of a laptop screen running a terminal agent](https://www.openinterpreter.com/blog/open-interpreter-1-0/blog-hero-1.jpg)](https://www.openinterpreter.com/docs/terminal)
 
-> [!NOTE]
-> June 8th 2026: **Open Interpreter 1.0 is in pre-release.** Check out the [blog post](https://www.openinterpreter.com/blog/open-interpreter-1-0) and let us know what you think on [Discord](https://discord.gg/Hvz9Axh84z).
-
 ### Installation
 
 macOS and Linux:
