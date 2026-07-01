@@ -129,6 +129,13 @@ pub struct ModelProviderInfo {
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+    /// Reasoning-suppression override table for the OllamaNative wire, mirroring elf-dispatch's
+    /// ollama-backend.js resolveThink(): comma-separated "substr:value" pairs, checked against the
+    /// model id in order, first match wins. value is "false" (think:false, the default behavior
+    /// when this field is unset), "true", or an effort string ("low"/"medium"/"high") for models
+    /// like gpt-oss that ignore a bare think:false and need an effort level instead. Ignored for
+    /// any wire_api other than OllamaNative.
+    pub ollama_think: Option<String>,
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
     /// Additional HTTP headers to include in requests to this provider where
@@ -426,6 +433,7 @@ impl ModelProviderInfo {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
+            ollama_think: None,
             query_params: None,
             http_headers: Some(
                 [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
@@ -468,6 +476,7 @@ impl ModelProviderInfo {
                 region: None,
             })),
             wire_api: WireApi::Responses,
+            ollama_think: None,
             query_params: None,
             http_headers: Some(HashMap::from([(
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string(),
@@ -627,6 +636,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         auth: None,
         aws: None,
         wire_api,
+        ollama_think: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,

@@ -144,6 +144,10 @@ pub(crate) fn resolve_stream_transport_route(
                 "wire_api = \"messages\" is not supported by harness = \"{harness_name}\""
             ),
         )),
+        (WireApi::OllamaNative, _) => Err(CodexErr::InvalidRequest(
+            "wire_api = \"ollama_native\" requires native Ollama transport; direct execution via the Ollama native backend is required"
+                .to_string(),
+        )),
     }
 }
 

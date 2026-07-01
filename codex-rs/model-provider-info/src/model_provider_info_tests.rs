@@ -20,6 +20,7 @@ base_url = "http://localhost:11434/v1"
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        ollama_think: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -52,6 +53,7 @@ query_params = { api-version = "2025-04-01-preview" }
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        ollama_think: None,
         query_params: Some(maplit::hashmap! {
             "api-version".to_string() => "2025-04-01-preview".to_string(),
         }),
@@ -87,6 +89,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        ollama_think: None,
         query_params: None,
         http_headers: Some(maplit::hashmap! {
             "X-Example-Header".to_string() => "example-value".to_string(),
@@ -159,6 +162,7 @@ fn test_supports_remote_compaction_for_azure_name() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        ollama_think: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -184,6 +188,7 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        ollama_think: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -264,6 +269,7 @@ fn test_create_amazon_bedrock_provider() {
                 region: None,
             }),
             wire_api: WireApi::Responses,
+            ollama_think: None,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string() =>
@@ -504,4 +510,28 @@ fn ollama_native_wire_api_display_and_serde_roundtrip() {
 
     let deserialized: WireApi = serde_json::from_str("\"ollama_native\"").unwrap();
     assert_eq!(deserialized, WireApi::OllamaNative);
+}
+
+#[test]
+fn model_provider_info_deserializes_ollama_think_override_table() {
+    let toml_str = r#"
+        name = "ollama-native"
+        wire_api = "ollama_native"
+        ollama_think = "gpt-oss:low,qwen3:false"
+    "#;
+    let provider: ModelProviderInfo = toml::from_str(toml_str).unwrap();
+    assert_eq!(
+        provider.ollama_think.as_deref(),
+        Some("gpt-oss:low,qwen3:false")
+    );
+}
+
+#[test]
+fn model_provider_info_ollama_think_defaults_to_none() {
+    let provider = ModelProviderInfo {
+        name: "ollama-native".to_string(),
+        wire_api: WireApi::OllamaNative,
+        ..Default::default()
+    };
+    assert_eq!(provider.ollama_think, None);
 }

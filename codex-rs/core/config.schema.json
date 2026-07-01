@@ -1560,6 +1560,10 @@
           "description": "Friendly display name.",
           "type": "string"
         },
+        "ollama_think": {
+          "description": "Reasoning-suppression override table for the OllamaNative wire, mirroring elf-dispatch's ollama-backend.js resolveThink(): comma-separated \"substr:value\" pairs, checked against the model id in order, first match wins. value is \"false\" (think:false, the default behavior when this field is unset), \"true\", or an effort string (\"low\"/\"medium\"/\"high\") for models like gpt-oss that ignore a bare think:false and need an effort level instead. Ignored for any wire_api other than OllamaNative.",
+          "type": "string"
+        },
         "query_params": {
           "additionalProperties": {
             "type": "string"
@@ -4412,6 +4416,13 @@
           "description": "Anthropic Messages exposed at `/v1/messages`.",
           "enum": [
             "messages"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Ollama's native chat API at `/api/chat` — NOT the OpenAI-compat surface. Only meaningful for Ollama-family providers; carries `think` support.",
+          "enum": [
+            "ollama_native"
           ],
           "type": "string"
         }
