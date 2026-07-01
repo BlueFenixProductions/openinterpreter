@@ -535,3 +535,16 @@ fn model_provider_info_ollama_think_defaults_to_none() {
     };
     assert_eq!(provider.ollama_think, None);
 }
+
+#[test]
+fn built_in_providers_include_ollama_native() {
+    let providers = built_in_model_providers(None);
+    let ollama_native = providers
+        .get(OLLAMA_NATIVE_PROVIDER_ID)
+        .expect("ollama-native provider must be registered");
+    assert_eq!(ollama_native.wire_api, WireApi::OllamaNative);
+    assert_eq!(
+        ollama_native.base_url.as_deref(),
+        Some("http://localhost:11434/v1")
+    );
+}

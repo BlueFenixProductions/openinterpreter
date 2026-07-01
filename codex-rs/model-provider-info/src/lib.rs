@@ -522,6 +522,7 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
+pub const OLLAMA_NATIVE_PROVIDER_ID: &str = "ollama-native";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers(
@@ -540,6 +541,10 @@ pub fn built_in_model_providers(
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
+        ),
+        (
+            OLLAMA_NATIVE_PROVIDER_ID,
+            create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::OllamaNative),
         ),
         (
             LMSTUDIO_OSS_PROVIDER_ID,
