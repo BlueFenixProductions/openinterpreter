@@ -181,6 +181,7 @@ fn model_provider_from_proto(
             .transpose()?,
         aws: None,
         wire_api,
+        ollama_think: None,
         query_params: provider.query_params.map(|map| map.values),
         http_headers: provider.http_headers.map(|map| map.values),
         env_http_headers: provider.env_http_headers.map(|map| map.values),
@@ -208,6 +209,7 @@ fn model_provider_to_proto(
         auth,
         aws: _,
         wire_api,
+        ollama_think: _,
         query_params,
         http_headers,
         env_http_headers,
@@ -291,7 +293,7 @@ fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
         WireApi::Responses => proto::WireApi::Responses,
         // The cloud thread-config protocol predates the local-only chat and
         // messages wire APIs and cannot express them.
-        WireApi::Chat | WireApi::Messages => proto::WireApi::Unspecified,
+        WireApi::Chat | WireApi::Messages | WireApi::OllamaNative => proto::WireApi::Unspecified,
     }
 }
 
@@ -521,6 +523,7 @@ mod tests {
                 cwd: workspace_dir(),
             }),
             wire_api: WireApi::Responses,
+            ollama_think: None,
             query_params: Some(HashMap::from([(
                 "api-version".to_string(),
                 "2026-04-16".to_string(),

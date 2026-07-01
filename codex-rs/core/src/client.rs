@@ -71,12 +71,22 @@ use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::build_reqwest_client;
+use codex_ollama_wire::chat_events::chat_chunk_to_events;
+use codex_ollama_wire::chat_stream::chat_stream as ollama_chat_stream;
+use codex_ollama_wire::chat_types::ChatMessage as OllamaChatMessage;
+use codex_ollama_wire::chat_types::ChatRequest as OllamaChatRequest;
+use codex_ollama_wire::chat_types::ChatToolCall as OllamaChatToolCall;
+use codex_ollama_wire::chat_types::ChatToolCallFunction as OllamaChatToolCallFunction;
+use codex_ollama_wire::think::resolve_think;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -1528,6 +1538,188 @@ impl ModelClientSession {
         }
     }
 
+    /// Streams a turn over Ollama's native `/api/chat` (NOT the OpenAI-compat surface).
+    ///
+    /// Local Ollama has no API key, so unlike the other `stream_*` methods on this type this
+    /// intentionally has no `AuthManager`/`PendingUnauthorizedRetry` loop — there is nothing to
+    /// authenticate or retry-on-401. `effort`, `summary`, `service_tier`, and `responses_metadata`
+    /// are Responses/Chat-Completions-shaped reasoning/turn-metadata controls that have no analog
+    /// on Ollama's native wire (which only exposes `think`, resolved below via
+    /// `resolve_think`), so they are unused here by design (spec: docs/superpowers/specs/
+    /// 2026-07-01-native-ollama-backend-design.md, "no harness-specific shaping in v1").
+    #[instrument(
+        name = "model_client.stream_ollama_native_chat_api",
+        level = "info",
+        skip_all,
+        fields(
+            model = %model_info.slug,
+            wire_api = %self.client.state.provider.info().wire_api,
+            transport = "ollama_native_chat",
+            http.method = "POST",
+            api.path = "api/chat"
+        )
+    )]
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_ollama_native_chat_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        _session_telemetry: &SessionTelemetry,
+        _effort: Option<ReasoningEffortConfig>,
+        _summary: ReasoningSummaryConfig,
+        _service_tier: Option<String>,
+        _responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        let provider_info = self.client.state.provider.info();
+        let host_root = codex_ollama_wire::url::base_url_to_host_root(
+            provider_info.base_url.as_deref().unwrap_or_default(),
+        );
+        let think = resolve_think(&model_info.slug, provider_info.ollama_think.as_deref());
+        let request = OllamaChatRequest {
+            model: model_info.slug.clone(),
+            messages: ollama_messages_from_prompt(prompt),
+            think,
+            stream: true,
+            tools: None,
+        };
+
+        let inference_trace_attempt = inference_trace.start_attempt();
+        inference_trace_attempt.record_started(&request);
+
+        let raw_stream = match ollama_chat_stream(&host_root, &request).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                let err = CodexErr::Stream(err.to_string(), None);
+                inference_trace_attempt.record_failed(&err, None, &[]);
+                return Err(err);
+            }
+        };
+
+        let (tx_event, rx_event) =
+            mpsc::channel::<Result<ResponseEvent>>(RESPONSE_STREAM_CHANNEL_CAPACITY);
+        let consumer_dropped = CancellationToken::new();
+        let consumer_dropped_for_stream = consumer_dropped.clone();
+
+        tokio::spawn(async move {
+            let mut raw_stream = raw_stream;
+            // Ollama's native chunks carry only bare content/thinking/tool_calls deltas — no
+            // `OutputItemAdded`/`OutputItemDone` item-lifecycle events like the Responses and
+            // Chat-Completions wires send. The turn loop (`session/turn.rs`) requires an
+            // `OutputItemAdded` before it will accept `OutputTextDelta`/`ReasoningContentDelta`
+            // (it panics otherwise: "OutputTextDelta without active item") and only registers a
+            // tool call once it sees `OutputItemDone(ResponseItem::FunctionCall)`. This state
+            // synthesizes that bracketing, mirroring `codex-chat-wire-compat`'s
+            // `process_chat_sse`/`StreamState` (`chat-wire-compat/src/stream.rs`), the same
+            // problem solved for the OpenAI-compat chat wire.
+            let mut ollama_stream_state = OllamaStreamState::default();
+            loop {
+                let chunk = tokio::select! {
+                    _ = consumer_dropped_for_stream.cancelled() => {
+                        inference_trace_attempt.record_cancelled(STREAM_DROPPED_REASON, None, &[]);
+                        return;
+                    }
+                    chunk = raw_stream.next() => chunk,
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                match chunk {
+                    Ok(chunk) => {
+                        let done = chunk.done;
+                        let tool_calls = chunk.message.tool_calls.clone();
+                        for event in chat_chunk_to_events(chunk) {
+                            if matches!(event, ResponseEvent::Completed { .. })
+                                && !ollama_stream_state
+                                    .finalize_open_items(&tx_event, &inference_trace_attempt)
+                                    .await
+                            {
+                                return;
+                            }
+                            if !ollama_stream_state.before_event(&event, &tx_event).await {
+                                inference_trace_attempt.record_cancelled(
+                                    STREAM_DROPPED_REASON,
+                                    None,
+                                    &[],
+                                );
+                                return;
+                            }
+                            if let ResponseEvent::Completed {
+                                response_id,
+                                token_usage,
+                                ..
+                            } = &event
+                            {
+                                inference_trace_attempt.record_completed(
+                                    response_id,
+                                    None,
+                                    token_usage,
+                                    &[],
+                                );
+                            }
+                            if tx_event.send(Ok(event)).await.is_err() {
+                                inference_trace_attempt.record_cancelled(
+                                    STREAM_DROPPED_REASON,
+                                    None,
+                                    &[],
+                                );
+                                return;
+                            }
+                        }
+                        if let Some(tool_calls) = tool_calls
+                            && !tool_calls.is_empty()
+                        {
+                            if !ollama_stream_state
+                                .finalize_open_items(&tx_event, &inference_trace_attempt)
+                                .await
+                            {
+                                return;
+                            }
+                            for call in tool_calls {
+                                let arguments = serde_json::to_string(&call.function.arguments)
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                let item = ResponseItem::FunctionCall {
+                                    id: None,
+                                    name: call.function.name,
+                                    namespace: None,
+                                    arguments,
+                                    call_id: call.id,
+                                    metadata: None,
+                                };
+                                if tx_event
+                                    .send(Ok(ResponseEvent::OutputItemDone(item)))
+                                    .await
+                                    .is_err()
+                                {
+                                    inference_trace_attempt.record_cancelled(
+                                        STREAM_DROPPED_REASON,
+                                        None,
+                                        &[],
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        if done {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let err = CodexErr::Stream(err.to_string(), None);
+                        inference_trace_attempt.record_failed(&err, None, &[]);
+                        let _ = tx_event.send(Err(err)).await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(ResponseStream {
+            rx_event,
+            consumer_dropped,
+        })
+    }
+
     async fn stream_messages_harness_api(
         &self,
         route: MessagesHarnessRoute,
@@ -2430,6 +2622,19 @@ impl ModelClientSession {
                 ))
                 .await
             }
+            StreamTransportRoute::OllamaNativeChat => {
+                self.stream_ollama_native_chat_api(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    effort,
+                    summary,
+                    service_tier,
+                    responses_metadata,
+                    inference_trace,
+                )
+                .await
+            }
         }
     }
 
@@ -2456,6 +2661,256 @@ fn claude_code_profile_for_route(profile: ClaudeCodeProfileRoute) -> ClaudeCodeP
     match profile {
         ClaudeCodeProfileRoute::Full => ClaudeCodeProfile::Full,
         ClaudeCodeProfileRoute::Bare => ClaudeCodeProfile::Bare,
+    }
+}
+
+/// Converts a turn's `Prompt` into the message list Ollama's native `/api/chat` expects.
+///
+/// Mirrors `codex-chat-wire-compat`'s `convert_request` at a basic level, adapted to
+/// `OllamaChatMessage`'s simpler shape (no `tool_call_id`, no reasoning replay — Ollama's native
+/// wire doesn't need past `thinking` resent, only whether to request it via `think` on this
+/// request). v1 does not advertise tool definitions on the outbound request (no prior task built
+/// a `ToolSpec` -> Ollama tool-JSON converter); response-side tool calls still parse correctly
+/// per `chat_chunk_to_events` (Task 8).
+fn ollama_messages_from_prompt(prompt: &Prompt) -> Vec<OllamaChatMessage> {
+    let mut messages = Vec::new();
+    let instructions = prompt.base_instructions.text.trim();
+    if !instructions.is_empty() {
+        messages.push(OllamaChatMessage {
+            role: "system".to_string(),
+            content: Some(instructions.to_string()),
+            thinking: None,
+            tool_calls: None,
+        });
+    }
+
+    for item in &prompt.input {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                let Some(text) = ollama_message_content_text(content) else {
+                    continue;
+                };
+                let role = if role == "developer" {
+                    "user".to_string()
+                } else {
+                    role.clone()
+                };
+                messages.push(OllamaChatMessage {
+                    role,
+                    content: Some(text),
+                    thinking: None,
+                    tool_calls: None,
+                });
+            }
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => {
+                let arguments = serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
+                messages.push(OllamaChatMessage {
+                    role: "assistant".to_string(),
+                    content: None,
+                    thinking: None,
+                    tool_calls: Some(vec![OllamaChatToolCall {
+                        id: call_id.clone(),
+                        function: OllamaChatToolCallFunction {
+                            index: 0,
+                            name: name.clone(),
+                            arguments,
+                        },
+                    }]),
+                });
+            }
+            ResponseItem::FunctionCallOutput { output, .. } => {
+                messages.push(OllamaChatMessage {
+                    role: "tool".to_string(),
+                    content: Some(ollama_tool_output_text(output)),
+                    thinking: None,
+                    tool_calls: None,
+                });
+            }
+            ResponseItem::AgentMessage { .. }
+            | ResponseItem::Reasoning { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::CompactionTrigger { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::Other => {}
+        }
+    }
+
+    messages
+}
+
+/// Flattens a message's content items into plain text (Ollama's native `ChatMessage.content` is a
+/// bare string, unlike the OpenAI-compat wire's text/image content-array shape). Images are
+/// dropped in v1 — `OllamaChatMessage` has no image field to carry them.
+fn ollama_message_content_text(content: &[ContentItem]) -> Option<String> {
+    let text: String = content
+        .iter()
+        .filter_map(|item| match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                Some(text.as_str())
+            }
+            ContentItem::InputImage { .. } => None,
+        })
+        .collect();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+fn ollama_tool_output_text(output: &FunctionCallOutputPayload) -> String {
+    output
+        .text_content()
+        .map(str::to_string)
+        .unwrap_or_default()
+}
+
+const OLLAMA_MESSAGE_ITEM_ID: &str = "ollama-message-1";
+const OLLAMA_REASONING_ITEM_ID: &str = "ollama-reasoning-1";
+
+/// Synthesizes the `OutputItemAdded`/`OutputItemDone` item-lifecycle bracketing the turn loop
+/// requires around Ollama's bare content/thinking deltas (see the doc comment above this
+/// struct's one call site in `stream_ollama_native_chat_api`). One assistant-message item and
+/// one reasoning item per turn is correct for v1 — Ollama's native API has no multi-segment
+/// reasoning or multiple-assistant-message-per-turn shape (same reasoning as
+/// `chat_events.rs`'s `content_index: 0`).
+#[derive(Default)]
+struct OllamaStreamState {
+    assistant_started: bool,
+    assistant_text: String,
+    reasoning_started: bool,
+    reasoning_text: String,
+}
+
+impl OllamaStreamState {
+    /// Emits `OutputItemAdded` the first time a text/reasoning delta appears, and accumulates
+    /// text so `finalize_open_items` can emit a matching `OutputItemDone` later. Must run before
+    /// `event` itself is forwarded. Returns `false` if the consumer disconnected.
+    async fn before_event(
+        &mut self,
+        event: &ResponseEvent,
+        tx_event: &mpsc::Sender<Result<ResponseEvent>>,
+    ) -> bool {
+        match event {
+            ResponseEvent::OutputTextDelta(delta) => {
+                if !self.assistant_started {
+                    self.assistant_started = true;
+                    let item = ResponseItem::Message {
+                        id: Some(OLLAMA_MESSAGE_ITEM_ID.to_string()),
+                        role: "assistant".to_string(),
+                        content: vec![ContentItem::OutputText {
+                            text: String::new(),
+                        }],
+                        phase: None,
+                        metadata: None,
+                    };
+                    if tx_event
+                        .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                        .await
+                        .is_err()
+                    {
+                        return false;
+                    }
+                }
+                self.assistant_text.push_str(delta);
+            }
+            ResponseEvent::ReasoningContentDelta { delta, .. } => {
+                if !self.reasoning_started {
+                    self.reasoning_started = true;
+                    let item = ResponseItem::Reasoning {
+                        id: Some(OLLAMA_REASONING_ITEM_ID.to_string()),
+                        summary: vec![],
+                        content: Some(vec![ReasoningItemContent::ReasoningText {
+                            text: String::new(),
+                        }]),
+                        encrypted_content: None,
+                        metadata: None,
+                    };
+                    if tx_event
+                        .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                        .await
+                        .is_err()
+                    {
+                        return false;
+                    }
+                }
+                self.reasoning_text.push_str(delta);
+            }
+            ResponseEvent::Created
+            | ResponseEvent::OutputItemDone(_)
+            | ResponseEvent::OutputItemAdded(_)
+            | ResponseEvent::ServerModel(_)
+            | ResponseEvent::ModelVerifications(_)
+            | ResponseEvent::TurnModerationMetadata(_)
+            | ResponseEvent::ServerReasoningIncluded(_)
+            | ResponseEvent::Completed { .. }
+            | ResponseEvent::ToolCallInputDelta { .. }
+            | ResponseEvent::ReasoningSummaryDelta { .. }
+            | ResponseEvent::ReasoningSummaryPartAdded { .. }
+            | ResponseEvent::RateLimits(_)
+            | ResponseEvent::ModelsEtag(_) => {}
+        }
+        true
+    }
+
+    /// Emits `OutputItemDone` for any still-open reasoning/assistant items — called before a
+    /// `Completed` event and before a tool call fires, matching
+    /// `chat-wire-compat`'s `finalize_reasoning`/`finalize_assistant_message` ordering. Returns
+    /// `false` if the consumer disconnected.
+    async fn finalize_open_items(
+        &mut self,
+        tx_event: &mpsc::Sender<Result<ResponseEvent>>,
+        inference_trace_attempt: &InferenceTraceAttempt,
+    ) -> bool {
+        if self.reasoning_started {
+            self.reasoning_started = false;
+            let item = ResponseItem::Reasoning {
+                id: Some(OLLAMA_REASONING_ITEM_ID.to_string()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: std::mem::take(&mut self.reasoning_text),
+                }]),
+                encrypted_content: None,
+                metadata: None,
+            };
+            if tx_event
+                .send(Ok(ResponseEvent::OutputItemDone(item)))
+                .await
+                .is_err()
+            {
+                inference_trace_attempt.record_cancelled(STREAM_DROPPED_REASON, None, &[]);
+                return false;
+            }
+        }
+        if self.assistant_started {
+            self.assistant_started = false;
+            let item = ResponseItem::Message {
+                id: Some(OLLAMA_MESSAGE_ITEM_ID.to_string()),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: std::mem::take(&mut self.assistant_text),
+                }],
+                phase: None,
+                metadata: None,
+            };
+            if tx_event
+                .send(Ok(ResponseEvent::OutputItemDone(item)))
+                .await
+                .is_err()
+            {
+                inference_trace_attempt.record_cancelled(STREAM_DROPPED_REASON, None, &[]);
+                return false;
+            }
+        }
+        true
     }
 }
 

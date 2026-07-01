@@ -2797,6 +2797,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-models-manager",
  "codex-network-proxy",
+ "codex-ollama-wire",
  "codex-otel",
  "codex-plugin",
  "codex-prompts",
@@ -3711,17 +3712,34 @@ version = "0.0.17"
 dependencies = [
  "assert_matches",
  "async-stream",
- "bytes",
  "codex-core",
  "codex-model-provider-info",
+ "codex-ollama-wire",
  "futures",
- "memchr",
  "pretty_assertions",
  "reqwest 0.12.28",
  "semver",
  "serde_json",
  "tokio",
  "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "codex-ollama-wire"
+version = "0.0.17"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "codex-api",
+ "codex-protocol",
+ "futures",
+ "memchr",
+ "pretty_assertions",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
  "wiremock",
 ]
 

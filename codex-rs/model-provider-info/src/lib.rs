@@ -66,6 +66,10 @@ pub enum WireApi {
     Chat,
     /// Anthropic Messages exposed at `/v1/messages`.
     Messages,
+    /// Ollama's native chat API at `/api/chat` — NOT the OpenAI-compat surface.
+    /// Only meaningful for Ollama-family providers; carries `think` support.
+    #[serde(rename = "ollama_native")]
+    OllamaNative,
 }
 
 impl fmt::Display for WireApi {
@@ -74,6 +78,7 @@ impl fmt::Display for WireApi {
             Self::Responses => "responses",
             Self::Chat => "chat",
             Self::Messages => "messages",
+            Self::OllamaNative => "ollama_native",
         };
         f.write_str(value)
     }
@@ -89,9 +94,10 @@ impl<'de> Deserialize<'de> for WireApi {
             "responses" => Ok(Self::Responses),
             "chat" => Ok(Self::Chat),
             "messages" => Ok(Self::Messages),
+            "ollama_native" => Ok(Self::OllamaNative),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chat", "messages"],
+                &["responses", "chat", "messages", "ollama_native"],
             )),
         }
     }
@@ -123,6 +129,13 @@ pub struct ModelProviderInfo {
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+    /// Reasoning-suppression override table for the OllamaNative wire, mirroring elf-dispatch's
+    /// ollama-backend.js resolveThink(): comma-separated "substr:value" pairs, checked against the
+    /// model id in order, first match wins. value is "false" (think:false, the default behavior
+    /// when this field is unset), "true", or an effort string ("low"/"medium"/"high") for models
+    /// like gpt-oss that ignore a bare think:false and need an effort level instead. Ignored for
+    /// any wire_api other than OllamaNative.
+    pub ollama_think: Option<String>,
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
     /// Additional HTTP headers to include in requests to this provider where
@@ -420,6 +433,7 @@ impl ModelProviderInfo {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
+            ollama_think: None,
             query_params: None,
             http_headers: Some(
                 [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
@@ -462,6 +476,7 @@ impl ModelProviderInfo {
                 region: None,
             })),
             wire_api: WireApi::Responses,
+            ollama_think: None,
             query_params: None,
             http_headers: Some(HashMap::from([(
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string(),
@@ -507,6 +522,7 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
+pub const OLLAMA_NATIVE_PROVIDER_ID: &str = "ollama-native";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers(
@@ -525,6 +541,10 @@ pub fn built_in_model_providers(
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
+        ),
+        (
+            OLLAMA_NATIVE_PROVIDER_ID,
+            create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::OllamaNative),
         ),
         (
             LMSTUDIO_OSS_PROVIDER_ID,
@@ -621,6 +641,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         auth: None,
         aws: None,
         wire_api,
+        ollama_think: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,

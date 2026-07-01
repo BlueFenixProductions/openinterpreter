@@ -1,0 +1,29 @@
+[package]
+name = "codex-ollama-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_ollama_wire"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-stream = { workspace = true }
+bytes = { workspace = true }
+codex-api = { workspace = true }
+codex-protocol = { workspace = true }
+futures = { workspace = true }
+memchr = { workspace = true }
+reqwest = { workspace = true, features = ["json", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }

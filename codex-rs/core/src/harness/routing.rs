@@ -44,6 +44,9 @@ pub(crate) enum StreamTransportRoute {
     /// claude-code shaping carried over the chat-completions wire
     /// (`/chat/completions`), via the chat-wire-compat converter.
     ClaudeCodeChat(ClaudeCodeProfileRoute),
+    /// Ollama's native /api/chat, carrying `think` — no harness-specific shaping in v1
+    /// (spec: docs/superpowers/specs/2026-07-01-native-ollama-backend-design.md, Resolved Decision 4).
+    OllamaNativeChat,
 }
 
 impl StreamTransportRoute {
@@ -144,6 +147,7 @@ pub(crate) fn resolve_stream_transport_route(
                 "wire_api = \"messages\" is not supported by harness = \"{harness_name}\""
             ),
         )),
+        (WireApi::OllamaNative, _) => Ok(StreamTransportRoute::OllamaNativeChat),
     }
 }
 
@@ -357,5 +361,15 @@ mod tests {
             resolve_stream_transport_route(WireApi::Chat, &Harness::Terminus2).expect("route"),
             StreamTransportRoute::ChatHarness(ChatHarnessRoute::Terminus2)
         );
+    }
+
+    #[test]
+    fn ollama_native_wire_api_routes_bare_regardless_of_harness() {
+        for harness in [Harness::Native, Harness::ClaudeCode, Harness::QwenCode] {
+            let route = resolve_stream_transport_route(WireApi::OllamaNative, &harness).expect(
+                "OllamaNative must resolve for every harness in v1 (spec Resolved Decision 4)",
+            );
+            assert_eq!(route, StreamTransportRoute::OllamaNativeChat);
+        }
     }
 }
