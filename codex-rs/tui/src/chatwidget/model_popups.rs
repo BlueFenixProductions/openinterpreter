@@ -895,6 +895,7 @@ fn provider_description(
             WireApi::Responses => "No API key required".to_string(),
             WireApi::Chat => "Chat-compatible endpoint".to_string(),
             WireApi::Messages => "Anthropic Messages endpoint".to_string(),
+            WireApi::OllamaNative => "Native Ollama chat endpoint".to_string(),
         }
     };
     let harness = default_harness_for_provider_model(provider_id, provider, None);
@@ -1003,6 +1004,7 @@ fn harness_choices_for_provider_model(
             WireApi::Messages => vec!["claude-code", "claude-code-bare"],
             WireApi::Chat => all_harnesses.to_vec(),
             WireApi::Responses => vec![""],
+            WireApi::OllamaNative => vec![""],
         }
     };
     choices.sort_by_key(|harness| usize::from(*harness != recommended));
@@ -1123,6 +1125,29 @@ mod tests {
             "openai",
             Some(&provider),
             "gpt-5.5",
+            /*include_all_harnesses*/ false,
+        );
+
+        assert_eq!(
+            choices
+                .into_iter()
+                .map(|choice| choice.label)
+                .collect::<Vec<_>>(),
+            vec!["Codex (recommended)"]
+        );
+    }
+
+    #[test]
+    fn provider_scoped_harness_picker_keeps_ollama_native_native_only() {
+        let provider = ModelProviderInfo {
+            wire_api: WireApi::OllamaNative,
+            ..Default::default()
+        };
+
+        let choices = harness_choices_for_provider_model(
+            "ollama",
+            Some(&provider),
+            "some-model",
             /*include_all_harnesses*/ false,
         );
 
