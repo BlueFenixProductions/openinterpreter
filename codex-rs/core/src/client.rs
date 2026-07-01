@@ -98,6 +98,7 @@ use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::Harness;
+use codex_tools::ToolSpec;
 use codex_tools::create_tools_json_for_responses_api;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
@@ -1581,7 +1582,7 @@ impl ModelClientSession {
             messages: ollama_messages_from_prompt(prompt),
             think,
             stream: true,
-            tools: None,
+            tools: ollama_tools_from_prompt(prompt),
         };
 
         let inference_trace_attempt = inference_trace.start_attempt();
@@ -2669,9 +2670,9 @@ fn claude_code_profile_for_route(profile: ClaudeCodeProfileRoute) -> ClaudeCodeP
 /// Mirrors `codex-chat-wire-compat`'s `convert_request` at a basic level, adapted to
 /// `OllamaChatMessage`'s simpler shape (no `tool_call_id`, no reasoning replay — Ollama's native
 /// wire doesn't need past `thinking` resent, only whether to request it via `think` on this
-/// request). v1 does not advertise tool definitions on the outbound request (no prior task built
-/// a `ToolSpec` -> Ollama tool-JSON converter); response-side tool calls still parse correctly
-/// per `chat_chunk_to_events` (Task 8).
+/// request). Tool definitions are advertised separately via `ollama_tools_from_prompt` on the
+/// request's `tools` field; response-side tool calls parse correctly per `chat_chunk_to_events`
+/// (Task 8).
 fn ollama_messages_from_prompt(prompt: &Prompt) -> Vec<OllamaChatMessage> {
     let mut messages = Vec::new();
     let instructions = prompt.base_instructions.text.trim();
@@ -2748,6 +2749,154 @@ fn ollama_messages_from_prompt(prompt: &Prompt) -> Vec<OllamaChatMessage> {
     }
 
     messages
+}
+
+/// Converts a turn's available tools into the JSON shape Ollama's native `/api/chat` expects for
+/// its `tools` field — OpenAI Chat-Completions' nested `{"type":"function","function":{...}}`
+/// shape, confirmed by curl against a real Ollama server (`qwen3-coder:30b`, 2026-07-01: a request
+/// built in exactly this shape got back a real, correctly-parsed `tool_calls` response). See
+/// docs/superpowers/specs/2026-07-01-ollama-native-tool-calling-fix-design.md.
+fn ollama_tools_from_prompt(prompt: &Prompt) -> Option<Vec<serde_json::Value>> {
+    if prompt.tools.is_empty() {
+        return None;
+    }
+
+    let tools: Vec<serde_json::Value> = prompt
+        .tools
+        .iter()
+        .filter_map(|tool| match tool {
+            ToolSpec::Function(responses_tool) => Some(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": responses_tool.name,
+                    "description": responses_tool.description,
+                    "parameters": responses_tool.parameters,
+                }
+            })),
+            ToolSpec::LocalShell {} => Some(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "local_shell",
+                    "description": "Run a shell command in the local environment",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "The command to execute, as a list of arguments"
+                            }
+                        },
+                        "required": ["command"]
+                    }
+                }
+            })),
+            ToolSpec::Freeform(freeform) => Some(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": freeform.name,
+                    "description": freeform.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "input": { "type": "string" }
+                        },
+                        "required": ["input"],
+                        "additionalProperties": false
+                    }
+                }
+            })),
+            ToolSpec::ToolSearch {
+                description,
+                parameters,
+                ..
+            } => Some(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "tool_search",
+                    "description": description,
+                    "parameters": parameters,
+                }
+            })),
+            ToolSpec::Namespace(_)
+            | ToolSpec::WebSearch { .. }
+            | ToolSpec::ImageGeneration { .. } => None,
+        })
+        .collect();
+
+    if tools.is_empty() { None } else { Some(tools) }
+}
+
+#[cfg(test)]
+mod ollama_tools_tests {
+    use super::*;
+    use codex_tools::JsonSchema;
+    use codex_tools::ResponsesApiTool;
+
+    #[test]
+    fn ollama_tools_from_prompt_converts_function_tool() {
+        let prompt = Prompt {
+            tools: vec![ToolSpec::Function(ResponsesApiTool {
+                name: "get_weather".to_string(),
+                description: "Get the weather for a city".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: JsonSchema::default(),
+                output_schema: None,
+            })],
+            ..Default::default()
+        };
+
+        let tools = ollama_tools_from_prompt(&prompt).expect("expected Some(tools)");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "get_weather");
+        assert_eq!(
+            tools[0]["function"]["description"],
+            "Get the weather for a city"
+        );
+        assert!(tools[0]["function"]["parameters"].is_object());
+    }
+
+    #[test]
+    fn ollama_tools_from_prompt_converts_local_shell_tool() {
+        let prompt = Prompt {
+            tools: vec![ToolSpec::LocalShell {}],
+            ..Default::default()
+        };
+
+        let tools = ollama_tools_from_prompt(&prompt).expect("expected Some(tools)");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "local_shell");
+        assert!(tools[0]["function"]["parameters"]["properties"]["command"].is_object());
+    }
+
+    #[test]
+    fn ollama_tools_from_prompt_returns_none_for_no_tools() {
+        let prompt = Prompt {
+            tools: vec![],
+            ..Default::default()
+        };
+
+        assert_eq!(ollama_tools_from_prompt(&prompt), None);
+    }
+
+    #[test]
+    fn ollama_tools_from_prompt_returns_none_when_only_unsupported_tools_present() {
+        let prompt = Prompt {
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: None,
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(ollama_tools_from_prompt(&prompt), None);
+    }
 }
 
 /// Flattens a message's content items into plain text (Ollama's native `ChatMessage.content` is a
