@@ -1,3 +1,4 @@
+pub mod chat_stream;
 pub mod chat_types;
 mod client;
 mod line_buffer;
