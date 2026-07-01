@@ -101,6 +101,7 @@ fn mcp_tool_output_response_item_includes_wall_time() {
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
+        encode_structured_content_as_toon: false,
     };
 
     let response = output.to_response_item(
@@ -136,6 +137,57 @@ fn mcp_tool_output_response_item_includes_wall_time() {
 }
 
 #[test]
+fn mcp_tool_output_response_payload_encodes_structured_content_as_toon_when_enabled() {
+    let output = McpToolOutput {
+        result: CallToolResult {
+            content: vec![serde_json::json!({ "type": "text", "text": "" })],
+            structured_content: Some(serde_json::json!({ "bytes": 5 })),
+            is_error: Some(false),
+            meta: None,
+        },
+        tool_input: json!({}),
+        wall_time: Duration::from_secs(1),
+        original_image_detail_supported: true,
+        truncation_policy: TruncationPolicy::Bytes(1024),
+        encode_structured_content_as_toon: true,
+    };
+
+    let payload = output.response_payload();
+    let text = payload.body.to_text().expect("text body");
+
+    assert!(text.contains("bytes: 5"), "expected TOON body, got: {text}");
+    assert!(
+        !text.contains("{\"bytes\":5}"),
+        "should not contain JSON, got: {text}"
+    );
+}
+
+#[test]
+fn mcp_tool_output_response_payload_stays_json_when_toon_disabled() {
+    let output = McpToolOutput {
+        result: CallToolResult {
+            content: vec![serde_json::json!({ "type": "text", "text": "" })],
+            structured_content: Some(serde_json::json!({ "bytes": 5 })),
+            is_error: Some(false),
+            meta: None,
+        },
+        tool_input: json!({}),
+        wall_time: Duration::from_secs(1),
+        original_image_detail_supported: true,
+        truncation_policy: TruncationPolicy::Bytes(1024),
+        encode_structured_content_as_toon: false,
+    };
+
+    let payload = output.response_payload();
+    let text = payload.body.to_text().expect("text body");
+
+    assert!(
+        text.contains("{\"bytes\":5}"),
+        "expected JSON body, got: {text}"
+    );
+}
+
+#[test]
 fn mcp_tool_output_response_item_truncates_large_structured_content() {
     let output = McpToolOutput {
         result: CallToolResult {
@@ -153,6 +205,7 @@ fn mcp_tool_output_response_item_truncates_large_structured_content() {
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(128),
+        encode_structured_content_as_toon: false,
     };
 
     let response = output.to_response_item(
@@ -196,6 +249,7 @@ fn mcp_tool_output_response_item_preserves_content_items() {
         wall_time: std::time::Duration::from_millis(500),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
+        encode_structured_content_as_toon: false,
     };
 
     let response = output.to_response_item(
@@ -250,6 +304,7 @@ fn mcp_tool_output_code_mode_result_stays_raw_call_tool_result() {
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(64),
+        encode_structured_content_as_toon: false,
     };
 
     let result = output.code_mode_result(&ToolPayload::Function {

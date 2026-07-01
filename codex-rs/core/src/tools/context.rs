@@ -69,6 +69,7 @@ pub struct McpToolOutput {
     pub wall_time: Duration,
     pub original_image_detail_supported: bool,
     pub truncation_policy: TruncationPolicy,
+    pub encode_structured_content_as_toon: bool,
 }
 
 impl ToolOutput for McpToolOutput {
@@ -112,6 +113,15 @@ impl McpToolOutput {
         let mut payload = self.result.as_function_call_output_payload();
         if let Some(items) = payload.content_items_mut() {
             sanitize_original_image_detail(self.original_image_detail_supported, items);
+        }
+
+        if self.encode_structured_content_as_toon
+            && let Some(structured_content) = &self.result.structured_content
+            && !structured_content.is_null()
+            && let FunctionCallOutputBody::Text(text) = &mut payload.body
+            && let Ok(toon_text) = codex_toon::encode(structured_content)
+        {
+            *text = toon_text;
         }
 
         let wall_time_seconds = self.wall_time.as_secs_f64();

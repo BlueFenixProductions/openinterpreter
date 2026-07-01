@@ -961,13 +961,22 @@ pub(crate) fn build_guardian_review_session_config(
     guardian_config.include_skill_instructions = false;
     guardian_config.memories.use_memories = false;
     guardian_config.memories.dedicated_tools = false;
-    guardian_config.base_instructions = Some(
+    guardian_config.base_instructions = Some({
+        let use_toon = parent_config
+            .guardian_toon_capable_models
+            .as_deref()
+            .is_some_and(|list| {
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|substr| !substr.is_empty())
+                    .any(|substr| active_model.contains(substr))
+            });
         parent_config
             .guardian_policy_config
             .as_deref()
-            .map(guardian_policy_prompt_with_config)
-            .unwrap_or_else(guardian_policy_prompt),
-    );
+            .map(|config| guardian_policy_prompt_with_config(config, use_toon))
+            .unwrap_or_else(|| guardian_policy_prompt(use_toon))
+    });
     guardian_config.notify = None;
     guardian_config.developer_instructions = None;
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);

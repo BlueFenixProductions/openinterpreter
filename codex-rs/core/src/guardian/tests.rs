@@ -1383,6 +1383,44 @@ fn parse_guardian_assessment_treats_bare_deny_as_high_risk() {
 }
 
 #[test]
+fn parse_guardian_assessment_falls_back_to_toon_when_json_fails() {
+    let toon_reply = "risk_level: medium\nuser_authorization: low\noutcome: allow\nrationale: ok";
+
+    let parsed = parse_guardian_assessment(Some(toon_reply)).expect("guardian assessment");
+
+    assert_eq!(
+        parsed,
+        GuardianAssessment {
+            risk_level: GuardianRiskLevel::Medium,
+            user_authorization: GuardianUserAuthorization::Low,
+            outcome: GuardianAssessmentOutcome::Allow,
+            rationale: "ok".to_string(),
+        }
+    );
+}
+
+#[test]
+fn parse_guardian_assessment_prefers_json_over_toon_when_both_present() {
+    // A reply that happens to look like it could be TOON-adjacent but starts with `{` must take
+    // the JSON path, never the TOON path — this is the ordering the spec's Global Constraints
+    // section requires (JSON first, TOON only after JSON fails).
+    let json_reply = r#"{"outcome":"deny","rationale":"json wins"}"#;
+
+    let parsed = parse_guardian_assessment(Some(json_reply)).expect("guardian assessment");
+
+    assert_eq!(parsed.rationale, "json wins");
+}
+
+#[test]
+fn parse_guardian_assessment_rejects_invalid_toon_and_json() {
+    let garbage = "not valid json and not valid toon either {{{";
+
+    let err = parse_guardian_assessment(Some(garbage)).expect_err("should fail to parse");
+
+    assert!(err.to_string().contains("JSON or TOON"));
+}
+
+#[test]
 fn guardian_output_schema_requires_only_outcome_and_allows_optional_details() {
     let schema = guardian_output_schema();
 
@@ -1411,6 +1449,18 @@ fn guardian_output_schema_requires_only_outcome_and_allows_optional_details() {
             "required": ["outcome"]
         })
     );
+}
+
+#[test]
+fn guardian_policy_prompt_includes_toon_instruction_when_use_toon_true() {
+    let prompt = guardian_policy_prompt(true);
+    assert!(prompt.contains("Output ONLY TOON"));
+}
+
+#[test]
+fn guardian_policy_prompt_omits_toon_instruction_when_use_toon_false() {
+    let prompt = guardian_policy_prompt(false);
+    assert!(!prompt.contains("Output ONLY TOON"));
 }
 
 enum GuardianTestCatalog {
@@ -2920,6 +2970,44 @@ async fn guardian_review_session_config_preserves_parent_network_proxy() {
 }
 
 #[tokio::test]
+async fn guardian_review_session_config_uses_toon_prompt_for_gated_model() {
+    let mut parent_config = test_config().await;
+    parent_config.guardian_toon_capable_models = Some("toon-capable-model".to_string());
+
+    let guardian_config = build_guardian_review_session_config_for_test(
+        &parent_config,
+        /*live_network_config*/ None,
+        "toon-capable-model-v2",
+        /*reasoning_effort*/ None,
+    )
+    .expect("guardian config");
+
+    assert_eq!(
+        guardian_config.base_instructions,
+        Some(guardian_policy_prompt(true))
+    );
+}
+
+#[tokio::test]
+async fn guardian_review_session_config_uses_json_prompt_for_ungated_model() {
+    let mut parent_config = test_config().await;
+    parent_config.guardian_toon_capable_models = Some("toon-capable-model".to_string());
+
+    let guardian_config = build_guardian_review_session_config_for_test(
+        &parent_config,
+        /*live_network_config*/ None,
+        "some-other-model",
+        /*reasoning_effort*/ None,
+    )
+    .expect("guardian config");
+
+    assert_eq!(
+        guardian_config.base_instructions,
+        Some(guardian_policy_prompt(false))
+    );
+}
+
+#[tokio::test]
 async fn guardian_review_session_config_clears_parent_developer_instructions() {
     let mut parent_config = test_config().await;
     parent_config.developer_instructions =
@@ -2936,7 +3024,7 @@ async fn guardian_review_session_config_clears_parent_developer_instructions() {
     assert_eq!(guardian_config.developer_instructions, None);
     assert_eq!(
         guardian_config.base_instructions,
-        Some(guardian_policy_prompt())
+        Some(guardian_policy_prompt(false))
     );
 }
 
@@ -3156,7 +3244,8 @@ async fn guardian_review_session_config_uses_requirements_guardian_policy_config
     assert_eq!(
         guardian_config.base_instructions,
         Some(guardian_policy_prompt_with_config(
-            "Use the workspace-managed guardian policy."
+            "Use the workspace-managed guardian policy.",
+            false
         ))
     );
 }
@@ -3193,6 +3282,6 @@ async fn guardian_review_session_config_uses_default_guardian_policy_without_req
     assert_eq!(guardian_config.developer_instructions, None);
     assert_eq!(
         guardian_config.base_instructions,
-        Some(guardian_policy_prompt())
+        Some(guardian_policy_prompt(false))
     );
 }
