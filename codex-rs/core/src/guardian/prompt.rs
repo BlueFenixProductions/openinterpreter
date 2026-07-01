@@ -596,10 +596,13 @@ pub(crate) fn parse_guardian_assessment(text: Option<&str>) -> anyhow::Result<Gu
         } else if let (Some(start), Some(end)) = (text.find('{'), text.rfind('}'))
             && start < end
             && let Some(slice) = text.get(start..=end)
+            && let Ok(payload) = serde_json::from_str::<GuardianAssessmentPayload>(slice)
         {
-            serde_json::from_str::<GuardianAssessmentPayload>(slice)?
+            payload
+        } else if let Some(payload) = codex_toon::decode_toon::<GuardianAssessmentPayload>(text) {
+            payload
         } else {
-            anyhow::bail!("guardian assessment was not valid JSON");
+            anyhow::bail!("guardian assessment was not valid JSON or TOON");
         };
 
     let outcome = parsed_payload.outcome;
@@ -683,6 +686,18 @@ For anything else, use this JSON schema:
 }"#
 }
 
+/// TOON-flavored variant of `guardian_output_contract_prompt()`, used only for models
+/// bench-confirmed to reliably emit TOON for this schema (see
+/// docs/superpowers/specs/2026-07-01-toon-support-design.md). Layers `codex_toon::toon_instruction()`
+/// over the same field contract described in `guardian_output_schema()`, mirroring elf-dispatch's
+/// SYSTEM_REVIEW_TOON.
+fn guardian_output_contract_prompt_toon() -> String {
+    format!(
+        "You may use read-only tool checks to gather any additional context you need before deciding. When you are ready to answer, your final message must be TOON (Token-Oriented Object Notation), not JSON.\n\n{}\n\nFields: risk_level (\"low\"|\"medium\"|\"high\"|\"critical\"), user_authorization (\"unknown\"|\"low\"|\"medium\"|\"high\"), outcome (\"allow\"|\"deny\", required), rationale (string).\n\nFor low-risk actions, give the final answer directly: outcome: allow",
+        codex_toon::toon_instruction()
+    )
+}
+
 /// Guardian policy prompt.
 ///
 /// Keep the prompt in a dedicated markdown file so reviewers can audit prompt
@@ -692,12 +707,17 @@ For anything else, use this JSON schema:
 /// The template is intentionally separated from the default tenant policy
 /// configuration so workspace-managed overrides can keep the configurable
 /// section narrower than the full policy.
-pub(crate) fn guardian_policy_prompt() -> String {
-    guardian_policy_prompt_with_config(include_str!("policy.md"))
+pub(crate) fn guardian_policy_prompt(use_toon: bool) -> String {
+    guardian_policy_prompt_with_config(include_str!("policy.md"), use_toon)
 }
 
-pub(crate) fn guardian_policy_prompt_with_config(tenant_policy_config: &str) -> String {
+pub(crate) fn guardian_policy_prompt_with_config(tenant_policy_config: &str, use_toon: bool) -> String {
     let template = include_str!("policy_template.md").trim_end();
     let prompt = template.replace("{tenant_policy_config}", tenant_policy_config.trim());
-    format!("{prompt}\n\n{}\n", guardian_output_contract_prompt())
+    let contract = if use_toon {
+        guardian_output_contract_prompt_toon()
+    } else {
+        guardian_output_contract_prompt().to_string()
+    };
+    format!("{prompt}\n\n{contract}\n")
 }

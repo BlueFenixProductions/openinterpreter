@@ -685,6 +685,11 @@ pub struct Config {
     /// guardian developer prompt.
     pub guardian_policy_config: Option<String>,
 
+    /// Comma-separated model-id substrings gated in for guardian TOON output.
+    /// Mirrors `guardian_policy_config`'s resolution from `AutoReviewToml`. See
+    /// docs/superpowers/specs/2026-07-01-toon-support-design.md.
+    pub guardian_toon_capable_models: Option<String>,
+
     /// Whether to inject the `<permissions instructions>` developer block.
     pub include_permissions_instructions: bool,
 
@@ -3377,6 +3382,10 @@ impl Config {
                             auto_review.policy.as_deref(),
                         ))
                 });
+        let guardian_toon_capable_models = cfg
+            .auto_review
+            .as_ref()
+            .and_then(|auto_review| auto_review.toon_capable_models.clone());
         let personality = personality
             .or(cfg.personality)
             .or_else(|| {
@@ -3658,6 +3667,7 @@ impl Config {
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
             guardian_policy_config,
+            guardian_toon_capable_models,
             model_reasoning_effort: cfg.model_reasoning_effort,
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,

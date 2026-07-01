@@ -554,6 +554,14 @@ pub enum ThreadStoreToml {
 pub struct AutoReviewToml {
     /// Additional policy instructions inserted into the guardian prompt.
     pub policy: Option<String>,
+
+    /// Comma-separated model-id substrings that are bench-proven to reliably emit valid TOON for
+    /// the guardian assessment schema (see docs/superpowers/specs/2026-07-01-toon-support-design.md).
+    /// A model is asked for TOON output only if its id contains one of these substrings; unset or
+    /// empty means TOON is off for every model (unconditional JSON, today's behavior). Mirrors
+    /// elf-dispatch's LLM_TOON_REVIEW: populate this only after confirming the target model
+    /// actually emits valid TOON for this schema — don't guess.
+    pub toon_capable_models: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]

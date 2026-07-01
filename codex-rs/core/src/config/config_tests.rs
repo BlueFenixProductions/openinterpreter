@@ -6725,6 +6725,7 @@ async fn load_config_uses_auto_review_guardian_policy_config() -> std::io::Resul
     let cfg = ConfigToml {
         auto_review: Some(AutoReviewToml {
             policy: Some("  Use the user-configured guardian policy.  ".to_string()),
+            toon_capable_models: None,
         }),
         ..Default::default()
     };
@@ -6762,6 +6763,7 @@ async fn requirements_guardian_policy_beats_auto_review() -> std::io::Result<()>
     let cfg = ConfigToml {
         auto_review: Some(AutoReviewToml {
             policy: Some("Use the user-configured guardian policy.".to_string()),
+            toon_capable_models: None,
         }),
         ..Default::default()
     };
@@ -6792,6 +6794,7 @@ async fn load_config_ignores_empty_auto_review_guardian_policy_config() -> std::
     let cfg = ConfigToml {
         auto_review: Some(AutoReviewToml {
             policy: Some("   ".to_string()),
+            toon_capable_models: None,
         }),
         ..Default::default()
     };
