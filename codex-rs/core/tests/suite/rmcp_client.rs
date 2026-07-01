@@ -558,6 +558,159 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Full live round trip (real spawned MCP server, real turn) proving
+/// `McpToolOutput::response_payload()` actually encodes `structured_content` as TOON when
+/// `experimental_toon_tool_results` is enabled — not just the unit-level plumbing tests in
+/// `core/src/tools/context_tests.rs` (which construct `McpToolOutput` directly), but the real
+/// end-to-end path: a real MCP server response flowing through the real tool-call dispatch and
+/// into the real `function_call_output` sent back to the model. Mirrors `stdio_server_round_trip`
+/// exactly except for the config flag and the final assertion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(mcp_test_value)]
+async fn stdio_server_round_trip_encodes_structured_content_as_toon() -> anyhow::Result<()> {
+    // TODO(anp): Remove after packaging a Windows stdio test server for Wine exec.
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+
+    let call_id = "call-123";
+    let server_name = "rmcp";
+    let namespace = format!("mcp__{server_name}");
+
+    let call_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                "echo",
+                "{\"message\":\"ping\"}",
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let final_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-1", "rmcp echo tool completed successfully."),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let expected_env_value = "propagated-env";
+    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+
+    let fixture = test_codex()
+        .with_config(move |config| {
+            config.experimental_toon_tool_results = true;
+            insert_mcp_server(
+                config,
+                server_name,
+                stdio_transport(
+                    rmcp_test_server_bin,
+                    Some(HashMap::from([(
+                        "MCP_TEST_VALUE".to_string(),
+                        expected_env_value.to_string(),
+                    )])),
+                    Vec::new(),
+                ),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_remote_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
+
+    fixture
+        .codex
+        .submit(read_only_user_turn(&fixture, "call the rmcp echo tool"))
+        .await?;
+
+    let begin_event = wait_for_event(&fixture.codex, |ev| {
+        matches!(ev, EventMsg::McpToolCallBegin(_))
+    })
+    .await;
+    let EventMsg::McpToolCallBegin(begin) = begin_event else {
+        unreachable!("event guard guarantees McpToolCallBegin");
+    };
+    assert_eq!(begin.invocation.server, server_name);
+    assert_eq!(begin.invocation.tool, "echo");
+
+    let end_event = wait_for_event(&fixture.codex, |ev| {
+        matches!(ev, EventMsg::McpToolCallEnd(_))
+    })
+    .await;
+    let EventMsg::McpToolCallEnd(end) = end_event else {
+        unreachable!("event guard guarantees McpToolCallEnd");
+    };
+    let result = end
+        .result
+        .as_ref()
+        .expect("rmcp echo tool should return success");
+    assert_eq!(result.is_error, Some(false));
+    assert!(
+        result.structured_content.is_some(),
+        "echo tool should return structured content for this test to be meaningful"
+    );
+
+    wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let output_item = final_mock.single_request().function_call_output(call_id);
+    let request = call_mock.single_request();
+    assert!(
+        request.tool_by_name(&namespace, "echo").is_some(),
+        "direct MCP tool should be sent as a namespace child tool: {:?}",
+        request.body_json()
+    );
+
+    let output_text = output_item
+        .get("output")
+        .and_then(Value::as_str)
+        .expect("function_call_output output should be a string");
+    let wrapped_payload = split_wall_time_wrapped_output(output_text);
+
+    // The crux of this test: the real end-to-end output must be TOON, not JSON.
+    assert!(
+        !wrapped_payload.trim_start().starts_with('{'),
+        "expected TOON-shaped output, got JSON: {wrapped_payload}"
+    );
+    assert!(
+        // TOON quotes a value that contains a comma, colon, or quote — "ECHOING: ping" contains
+        // a colon, so a correct encoder quotes it. This is the same rule `toon_instruction()`
+        // documents for models to follow when emitting TOON, and the encoder honors it too.
+        wrapped_payload.contains("echo: \"ECHOING: ping\""),
+        "expected TOON `echo: \"ECHOING: ping\"` line, got: {wrapped_payload}"
+    );
+    assert!(
+        // The real toon-format encoder's quoting heuristic is broader than the bare
+        // comma/colon/quote rule `toon_instruction()` teaches models — confirmed empirically
+        // here rather than assumed: it also quotes this hyphenated bareword.
+        wrapped_payload.contains(&format!("env: \"{expected_env_value}\"")),
+        "expected TOON `env: \"{expected_env_value}\"` line, got: {wrapped_payload}"
+    );
+
+    // Round-trip through the real production decoder to prove it's not just TOON-shaped text by
+    // coincidence — it must actually decode back to the same values the JSON path would have had.
+    let decoded: Value =
+        codex_toon::decode_toon(wrapped_payload).expect("wrapped payload should decode as TOON");
+    assert_eq!(decoded["echo"], "ECHOING: ping");
+    assert_eq!(decoded["env"], expected_env_value);
+
+    server.verify().await;
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_cancels_startup_prewarm_waiting_for_mcp_startup() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
