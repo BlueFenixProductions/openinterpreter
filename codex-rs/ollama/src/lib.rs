@@ -2,6 +2,7 @@ mod client;
 mod line_buffer;
 mod parser;
 mod pull;
+pub mod think;
 mod url;
 
 pub use client::OllamaClient;
