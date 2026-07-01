@@ -705,6 +705,10 @@ pub struct Config {
     /// Whether to inject the `<environment_context>` user block.
     pub include_environment_context: bool,
 
+    /// Encode MCP tool results' `structured_content` as TOON instead of JSON when re-injecting
+    /// them into the model's context. Off by default; falls back to JSON on any encode failure.
+    pub experimental_toon_tool_results: bool,
+
     /// Compact prompt override.
     pub compact_prompt: Option<String>,
 
@@ -3373,6 +3377,7 @@ impl Config {
             .and_then(|skills| skills.include_instructions)
             .unwrap_or(true);
         let include_environment_context = cfg.include_environment_context.unwrap_or(true);
+        let experimental_toon_tool_results = cfg.experimental_toon_tool_results.unwrap_or(false);
         let guardian_policy_config =
             guardian_policy_config_from_requirements(config_layer_stack.requirements_toml())
                 .or_else(|| {
@@ -3592,6 +3597,7 @@ impl Config {
             include_collaboration_mode_instructions,
             include_skill_instructions,
             include_environment_context,
+            experimental_toon_tool_results,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
             cli_auth_credentials_store_mode: resolve_cli_auth_credentials_store_mode(

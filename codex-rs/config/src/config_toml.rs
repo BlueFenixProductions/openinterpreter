@@ -504,6 +504,12 @@ pub struct ConfigToml {
 
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     pub experimental_use_unified_exec_tool: Option<bool>,
+    /// Encode MCP tool results' `structured_content` as TOON instead of JSON when re-injecting
+    /// them into the model's context on later turns, saving input tokens on uniform-array results.
+    /// Unlike guardian's TOON output, this has no bench-validated per-model allowlist backing it —
+    /// enabling it is a bet that models comprehend TOON input as well as JSON, not a proven one.
+    /// Falls back to JSON on any encode failure. Default: disabled.
+    pub experimental_toon_tool_results: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
 }

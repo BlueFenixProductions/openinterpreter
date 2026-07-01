@@ -4599,6 +4599,10 @@
       ],
       "description": "Experimental / do not use. Selects the thread store implementation."
     },
+    "experimental_toon_tool_results": {
+      "description": "Encode MCP tool results' `structured_content` as TOON instead of JSON when re-injecting them into the model's context on later turns, saving input tokens on uniform-array results. Unlike guardian's TOON output, this has no bench-validated per-model allowlist backing it — enabling it is a bet that models comprehend TOON input as well as JSON, not a proven one. Falls back to JSON on any encode failure. Default: disabled.",
+      "type": "boolean"
+    },
     "experimental_use_unified_exec_tool": {
       "type": "boolean"
     },

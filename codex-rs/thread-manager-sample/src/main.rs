@@ -198,6 +198,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         include_collaboration_mode_instructions: false,
         include_skill_instructions: false,
         include_environment_context: false,
+        experimental_toon_tool_results: false,
         compact_prompt: None,
         notify: None,
         tui_notifications: TuiNotificationSettings::default(),
