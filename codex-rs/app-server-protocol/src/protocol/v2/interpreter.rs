@@ -12,6 +12,8 @@ pub enum WireApiDto {
     Responses,
     Chat,
     Messages,
+    #[serde(rename = "ollama_native")]
+    OllamaNative,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
