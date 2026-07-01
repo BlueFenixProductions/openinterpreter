@@ -3,18 +3,18 @@ use memchr::memchr;
 
 #[derive(Default)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-pub(crate) struct LineBuffer {
+pub struct LineBuffer {
     bytes: BytesMut,
     /// Prefix already scanned and known not to contain a newline.
     scanned_len: usize,
 }
 
 impl LineBuffer {
-    pub(crate) fn extend_from_slice(&mut self, bytes: &[u8]) {
+    pub fn extend_from_slice(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
     }
 
-    pub(crate) fn take_line(&mut self) -> Option<BytesMut> {
+    pub fn take_line(&mut self) -> Option<BytesMut> {
         let Some(relative_index) = memchr(b'\n', &self.bytes[self.scanned_len..]) else {
             self.scanned_len = self.bytes.len();
             return None;

@@ -5,7 +5,6 @@ use serde_json::Value as JsonValue;
 use std::collections::VecDeque;
 use std::io;
 
-use crate::line_buffer::LineBuffer;
 use crate::parser::pull_events_from_value;
 use crate::pull::PullEvent;
 use crate::pull::PullProgressReporter;
@@ -18,6 +17,7 @@ use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 #[cfg(test)]
 use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_ollama_wire::line_buffer::LineBuffer;
 
 const OLLAMA_CONNECTION_ERROR: &str = "No running Ollama server detected. Start it with: `ollama serve` (after installing). Install instructions: https://github.com/ollama/ollama?tab=readme-ov-file#ollama";
 
