@@ -66,6 +66,10 @@ pub enum WireApi {
     Chat,
     /// Anthropic Messages exposed at `/v1/messages`.
     Messages,
+    /// Ollama's native chat API at `/api/chat` — NOT the OpenAI-compat surface.
+    /// Only meaningful for Ollama-family providers; carries `think` support.
+    #[serde(rename = "ollama_native")]
+    OllamaNative,
 }
 
 impl fmt::Display for WireApi {
@@ -74,6 +78,7 @@ impl fmt::Display for WireApi {
             Self::Responses => "responses",
             Self::Chat => "chat",
             Self::Messages => "messages",
+            Self::OllamaNative => "ollama_native",
         };
         f.write_str(value)
     }
@@ -89,9 +94,10 @@ impl<'de> Deserialize<'de> for WireApi {
             "responses" => Ok(Self::Responses),
             "chat" => Ok(Self::Chat),
             "messages" => Ok(Self::Messages),
+            "ollama_native" => Ok(Self::OllamaNative),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chat", "messages"],
+                &["responses", "chat", "messages", "ollama_native"],
             )),
         }
     }

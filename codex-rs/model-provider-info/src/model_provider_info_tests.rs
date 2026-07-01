@@ -494,3 +494,14 @@ refresh_interval_ms = 0
     assert_eq!(auth.refresh_interval_ms, 0);
     assert_eq!(auth.refresh_interval(), None);
 }
+
+#[test]
+fn ollama_native_wire_api_display_and_serde_roundtrip() {
+    assert_eq!(WireApi::OllamaNative.to_string(), "ollama_native");
+
+    let serialized = serde_json::to_string(&WireApi::OllamaNative).unwrap();
+    assert_eq!(serialized, "\"ollama_native\"");
+
+    let deserialized: WireApi = serde_json::from_str("\"ollama_native\"").unwrap();
+    assert_eq!(deserialized, WireApi::OllamaNative);
+}
