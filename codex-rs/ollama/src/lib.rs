@@ -1,12 +1,12 @@
 mod client;
 mod parser;
 mod pull;
-mod url;
 
 pub use codex_ollama_wire::chat_events;
 pub use codex_ollama_wire::chat_stream;
 pub use codex_ollama_wire::chat_types;
 pub use codex_ollama_wire::think;
+pub use codex_ollama_wire::url;
 
 pub use client::OllamaClient;
 use codex_core::config::Config;
