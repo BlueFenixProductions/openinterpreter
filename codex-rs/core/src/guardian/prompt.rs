@@ -711,7 +711,10 @@ pub(crate) fn guardian_policy_prompt(use_toon: bool) -> String {
     guardian_policy_prompt_with_config(include_str!("policy.md"), use_toon)
 }
 
-pub(crate) fn guardian_policy_prompt_with_config(tenant_policy_config: &str, use_toon: bool) -> String {
+pub(crate) fn guardian_policy_prompt_with_config(
+    tenant_policy_config: &str,
+    use_toon: bool,
+) -> String {
     let template = include_str!("policy_template.md").trim_end();
     let prompt = template.replace("{tenant_policy_config}", tenant_policy_config.trim());
     let contract = if use_toon {

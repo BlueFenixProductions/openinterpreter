@@ -156,7 +156,10 @@ fn mcp_tool_output_response_payload_encodes_structured_content_as_toon_when_enab
     let text = payload.body.to_text().expect("text body");
 
     assert!(text.contains("bytes: 5"), "expected TOON body, got: {text}");
-    assert!(!text.contains("{\"bytes\":5}"), "should not contain JSON, got: {text}");
+    assert!(
+        !text.contains("{\"bytes\":5}"),
+        "should not contain JSON, got: {text}"
+    );
 }
 
 #[test]
@@ -178,7 +181,10 @@ fn mcp_tool_output_response_payload_stays_json_when_toon_disabled() {
     let payload = output.response_payload();
     let text = payload.body.to_text().expect("text body");
 
-    assert!(text.contains("{\"bytes\":5}"), "expected JSON body, got: {text}");
+    assert!(
+        text.contains("{\"bytes\":5}"),
+        "expected JSON body, got: {text}"
+    );
 }
 
 #[test]
