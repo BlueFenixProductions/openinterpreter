@@ -4203,6 +4203,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-toon"
+version = "0.0.17"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "toon-format",
+]
+
+[[package]]
 name = "codex-tui"
 version = "0.0.17"
 dependencies = [
@@ -13981,6 +13991,18 @@ dependencies = [
  "syn 2.0.117",
  "tempfile",
  "tonic-build",
+]
+
+[[package]]
+name = "toon-format"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f89570c1a68d73941f728cca32a4345b2ffca36667ad921af336c60309a3e7e"
+dependencies = [
+ "indexmap 2.14.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
