@@ -154,7 +154,7 @@ impl App {
         }
     }
 
-    async fn send_thread_settings_update(
+    pub(super) async fn send_thread_settings_update(
         &mut self,
         app_server: &mut AppServerSession,
         params: ThreadSettingsUpdateParams,

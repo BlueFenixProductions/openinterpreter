@@ -22,6 +22,9 @@ jobs:
           set -euo pipefail
           ruby -e 'require "yaml"; Dir[".github/workflows/*.yml"].sort.each { |path| YAML.load_file(path); puts path }'
 
+      - name: Validate localized documentation parity
+        run: node scripts/check-doc-locales.mjs
+
       - name: Validate installer scripts
         run: |
           set -euo pipefail
@@ -75,7 +78,9 @@ jobs:
           ]
 
           manual_only.each do |file|
-            workflow = YAML.load_file(File.join(".github/workflows", file))
+            path = File.join(".github/workflows", file)
+            next unless File.exist?(path)
+            workflow = YAML.load_file(path)
             triggers = workflow.fetch(true)
             unexpected = triggers.keys - ["workflow_dispatch"]
             raise "#{file} should stay manual-only, found #{unexpected.inspect}" unless unexpected.empty?

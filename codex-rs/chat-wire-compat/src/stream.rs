@@ -108,8 +108,8 @@ impl StreamState {
     fn new() -> Self {
         Self {
             response_id: "chatcmpl-compat".to_string(),
-            message_item_id: "chat-message-1".to_string(),
-            reasoning_item_id: "chat-reasoning-1".to_string(),
+            message_item_id: std::convert::identity("chat-message-1".to_string()),
+            reasoning_item_id: std::convert::identity("chat-reasoning-1".to_string()),
             created_sent: false,
             assistant_item_started: false,
             assistant_text: String::new(),
@@ -240,7 +240,7 @@ async fn process_chat_sse(
                                         text: String::new(),
                                     }]),
                                     encrypted_content: None,
-                                    metadata: None,
+                                    internal_chat_message_metadata_passthrough: None,
                                 },
                             )))
                             .await
@@ -275,7 +275,7 @@ async fn process_chat_sse(
                                         text: String::new(),
                                     }],
                                     phase: None,
-                                    metadata: None,
+                                    internal_chat_message_metadata_passthrough: None,
                                 })))
                                 .await
                                 .is_err()
@@ -431,7 +431,7 @@ async fn finalize_assistant_message(
                 text: state.assistant_text.clone(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         })))
         .await
         .map_err(|_| ApiError::Stream("chat stream channel closed".to_string()))?;
@@ -455,7 +455,7 @@ async fn finalize_reasoning(
                 text: std::mem::take(&mut state.reasoning_content),
             }]),
             encrypted_content: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         })))
         .await
         .map_err(|_| ApiError::Stream("chat stream channel closed".to_string()))?;
@@ -500,7 +500,7 @@ async fn finalize_tool_calls_until(
                 namespace: None,
                 arguments: tool_call.arguments,
                 call_id,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             Some(ToolOutputKind::NamespacedFunction {
                 name: output_name,
@@ -511,7 +511,7 @@ async fn finalize_tool_calls_until(
                 namespace: Some(namespace.clone()),
                 arguments: tool_call.arguments,
                 call_id,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             Some(ToolOutputKind::Custom) => {
                 let input = match serde_json::from_str::<Value>(&tool_call.arguments) {
@@ -527,8 +527,9 @@ async fn finalize_tool_calls_until(
                     status: None,
                     call_id,
                     name,
+                    namespace: None,
                     input,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 }
             }
             None => ResponseItem::FunctionCall {
@@ -537,7 +538,7 @@ async fn finalize_tool_calls_until(
                 namespace: None,
                 arguments: tool_call.arguments,
                 call_id,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
         };
         tx_event

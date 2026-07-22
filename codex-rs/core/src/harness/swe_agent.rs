@@ -185,6 +185,7 @@ fn build_messages(prompt: &Prompt) -> Result<Vec<Value>, serde_json::Error> {
             | ResponseItem::Compaction { .. }
             | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::AdditionalTools { .. }
             | ResponseItem::Other => {}
         }
         item_index += 1;
@@ -251,7 +252,7 @@ fn build_harness_follow_up_item(content: &str, terminal_submit: bool) -> Option<
             text: SWE_AGENT_FORMAT_CORRECTION.to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     })
 }
 
@@ -262,8 +263,9 @@ fn build_swe_agent_command_call(command: String) -> ResponseItem {
         status: None,
         call_id: format!("swe-agent-command-{id}"),
         name: SWE_AGENT_COMMAND_TOOL_NAME.to_string(),
+        namespace: None,
         input: command,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 
@@ -280,7 +282,7 @@ fn build_shell_call(command: String) -> ResponseItem {
             env: None,
             user: None,
         }),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 
@@ -311,7 +313,7 @@ fn swe_observation_content(
 }
 
 fn normalize_bash_observation(content: &str, command: Option<&str>) -> String {
-    if is_timeout_observation(content, None, command)
+    if is_timeout_observation(content, /*structured*/ None, command)
         && let Some(command) = command
     {
         return format_swe_timeout(command);
@@ -590,14 +592,14 @@ mod tests {
     fn builds_observed_initial_request_shape() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
-                id: Some("user".to_string()),
+                id: Some(std::convert::identity("user".to_string())),
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
                     text: "Fix it.".to_string(),
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some("/workspace".into()),
             ..Prompt::default()
@@ -727,7 +729,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }
         );
     }
@@ -739,7 +741,7 @@ mod tests {
         );
 
         assert_eq!(
-            swe_observation_content(&output, None),
+            swe_observation_content(&output, /*command*/ None),
             Some("hello\n".to_string())
         );
     }
@@ -751,7 +753,7 @@ mod tests {
         );
 
         assert_eq!(
-            swe_observation_content(&output, None),
+            swe_observation_content(&output, /*command*/ None),
             Some("bash: R: command not found\n".to_string())
         );
     }
@@ -822,14 +824,14 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Message {
-                    id: Some("user".to_string()),
+                    id: Some(std::convert::identity("user".to_string())),
                     role: "user".to_string(),
                     content: vec![ContentItem::InputText {
                         text: "Fix it.".to_string(),
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -839,7 +841,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -849,7 +851,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -859,7 +861,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some("/workspace".into()),

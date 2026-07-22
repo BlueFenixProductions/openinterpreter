@@ -107,7 +107,7 @@ impl codex_extension_api::ThreadLifecycleContributor<Config> for GuardianMemoryC
 }
 
 impl codex_extension_api::ContextContributor for GuardianMemoryContextProbe {
-    fn contribute<'a>(
+    fn contribute_thread_context<'a>(
         &'a self,
         _session_store: &'a codex_extension_api::ExtensionData,
         thread_store: &'a codex_extension_api::ExtensionData,
@@ -248,7 +248,6 @@ async fn guardian_test_session_turn_and_rx(
     turn_mut.config = Arc::clone(&config);
     turn_mut.provider =
         create_model_provider(config.model_provider.clone(), turn_mut.auth_manager.clone());
-    turn_mut.user_instructions = None;
 
     (session, turn, rx)
 }
@@ -280,7 +279,6 @@ async fn guardian_test_session_and_turn_with_base_url(
     session.services.models_manager = models_manager;
     turn.config = Arc::clone(&config);
     turn.provider = create_model_provider(config.model_provider.clone(), turn.auth_manager.clone());
-    turn.user_instructions = None;
 
     (Arc::new(session), Arc::new(turn))
 }
@@ -298,7 +296,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                             .to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -306,7 +304,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                     namespace: None,
                     arguments: "{\"repo\":\"openai/codex\"}".to_string(),
                     call_id: "call-1".to_string(),
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
@@ -314,7 +312,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                     output: codex_protocol::models::FunctionCallOutputPayload::from_text(
                         "repo visibility: public".to_string(),
                     ),
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -324,7 +322,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                             .to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
         )
@@ -531,7 +529,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
                         text: "Please also push the second docs fix.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -540,7 +538,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
                         text: "I need approval for the second push.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
         )
@@ -663,7 +661,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "Compacted retained user request.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -672,7 +670,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "Compacted summary of earlier guardian context.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             /*reference_context_item*/ None,
@@ -689,7 +687,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "Please push after the compaction.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -698,7 +696,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
                         text: "I need approval for the post-compaction push.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
         )
@@ -746,7 +744,7 @@ fn collect_guardian_transcript_entries_skips_contextual_user_messages() {
                 text: "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
             id: None,
@@ -755,7 +753,7 @@ fn collect_guardian_transcript_entries_skips_contextual_user_messages() {
                 text: "hello".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
 
@@ -783,7 +781,7 @@ fn collect_guardian_transcript_entries_keeps_manual_approval_developer_message()
                 text: "ordinary developer context".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
             id: None,
@@ -792,7 +790,7 @@ fn collect_guardian_transcript_entries_keeps_manual_approval_developer_message()
                 text: approval_text.clone(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
 
@@ -817,7 +815,7 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
                 text: "check the repo".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::FunctionCall {
             id: None,
@@ -825,7 +823,7 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
             namespace: None,
             arguments: "{\"path\":\"README.md\"}".to_string(),
             call_id: "call-1".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::FunctionCallOutput {
             id: None,
@@ -833,7 +831,7 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
             output: codex_protocol::models::FunctionCallOutputPayload::from_text(
                 "repo is public".to_string(),
             ),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
             id: None,
@@ -842,7 +840,7 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
                 text: "I need to push a fix".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
 
@@ -925,6 +923,7 @@ fn guardian_approval_request_to_json_renders_mcp_tool_call_shape() -> serde_json
         connector_id: None,
         connector_name: Some("Playwright".to_string()),
         connector_description: None,
+        connected_account_email: Some("owner@example.com".to_string()),
         tool_title: Some("Navigate".to_string()),
         tool_description: None,
         annotations: Some(GuardianMcpAnnotations {
@@ -944,6 +943,7 @@ fn guardian_approval_request_to_json_renders_mcp_tool_call_shape() -> serde_json
                 "url": "https://example.com",
             },
             "connector_name": "Playwright",
+            "connected_account_email": "owner@example.com",
             "tool_title": "Navigate",
             "annotations": {
                 "destructive_hint": true,
@@ -1748,7 +1748,7 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
                     ),
                 }],
                 phase: None,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
         )
         .await;
@@ -1980,7 +1980,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "Please push the second docs fix too.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -1989,7 +1989,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "I need approval for the second docs fix.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
         )
@@ -2027,7 +2027,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "Please push the third docs fix too.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2036,7 +2036,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                         text: "I need approval for the third docs fix.".to_string(),
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
         )
@@ -2353,7 +2353,6 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
     turn_mut.config = Arc::clone(&config);
     turn_mut.provider =
         create_model_provider(config.model_provider.clone(), turn_mut.auth_manager.clone());
-    turn_mut.user_instructions = None;
 
     seed_guardian_parent_history(&session, &turn).await;
 
@@ -2776,7 +2775,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "Please inspect pending changes before pushing.".to_string(),
                         }],
                         phase: None,
-                        metadata: None,},
+                        internal_chat_message_metadata_passthrough: None,},
                     ResponseItem::Message {
                         id: None,
                         role: "assistant".to_string(),
@@ -2784,7 +2783,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "I need approval to run git diff.".to_string(),
                         }],
                         phase: None,
-                        metadata: None,},
+                        internal_chat_message_metadata_passthrough: None,},
                 ],
             )
             .await;
@@ -2843,7 +2842,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "Now inspect whether pushing is safe.".to_string(),
                         }],
                         phase: None,
-                        metadata: None,},
+                        internal_chat_message_metadata_passthrough: None,},
                     ResponseItem::Message {
                         id: None,
                         role: "assistant".to_string(),
@@ -2851,7 +2850,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                             text: "I need approval to push after the diff check.".to_string(),
                         }],
                         phase: None,
-                        metadata: None,},
+                        internal_chat_message_metadata_passthrough: None,},
                 ],
             )
             .await;
@@ -2947,6 +2946,7 @@ async fn guardian_review_session_config_preserves_parent_network_proxy() {
         /*live_network_config*/ None,
         "parent-active-model",
         Some(codex_protocol::openai_models::ReasoningEffort::Low),
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -2979,6 +2979,7 @@ async fn guardian_review_session_config_uses_toon_prompt_for_gated_model() {
         /*live_network_config*/ None,
         "toon-capable-model-v2",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -2998,6 +2999,7 @@ async fn guardian_review_session_config_uses_json_prompt_for_ungated_model() {
         /*live_network_config*/ None,
         "some-other-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3018,6 +3020,7 @@ async fn guardian_review_session_config_clears_parent_developer_instructions() {
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3041,6 +3044,7 @@ async fn guardian_review_session_config_clears_legacy_notify() {
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3075,6 +3079,7 @@ async fn guardian_review_session_config_uses_live_network_proxy_state() {
         Some(live_network.clone()),
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3117,6 +3122,7 @@ async fn guardian_review_session_config_disables_mcp_apps_plugins_and_memories()
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3147,6 +3153,7 @@ async fn guardian_review_session_config_allows_pinned_disabled_feature() {
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config should continue when a disabled feature is pinned on");
 
@@ -3165,6 +3172,7 @@ async fn guardian_review_session_config_uses_parent_active_model_instead_of_hard
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3183,6 +3191,7 @@ async fn guardian_review_session_config_keeps_bedrock_provider_for_bedrock_gpt_5
         /*live_network_config*/ None,
         AMAZON_BEDROCK_GPT_5_4_MODEL_ID,
         Some(ReasoningEffort::Low),
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3237,6 +3246,7 @@ async fn guardian_review_session_config_uses_requirements_guardian_policy_config
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 
@@ -3276,6 +3286,7 @@ async fn guardian_review_session_config_uses_default_guardian_policy_without_req
         /*live_network_config*/ None,
         "active-model",
         /*reasoning_effort*/ None,
+        /*model_messages*/ None,
     )
     .expect("guardian config");
 

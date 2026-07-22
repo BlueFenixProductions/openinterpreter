@@ -4,6 +4,8 @@ use super::AnalyticsEventsQueue;
 #[cfg(debug_assertions)]
 use super::capture_track_events_request;
 #[cfg(debug_assertions)]
+use super::send_track_events;
+#[cfg(debug_assertions)]
 use super::send_track_events_request;
 use super::track_event_request_batches;
 use crate::events::CodexAcceptedLineFingerprintsEventParams;
@@ -239,6 +241,77 @@ async fn capture_file_writes_final_batches_as_separate_lines() {
     fs::remove_file(capture_path).expect("remove capture file");
 }
 
+#[tokio::test]
+#[cfg(debug_assertions)]
+async fn api_key_auth_sends_events_anonymously_to_interpreter_backend() {
+    let capture_path = unique_capture_path("api-key-events");
+    let destination = AnalyticsEventsDestination::CaptureFile {
+        path: capture_path.clone(),
+    };
+    let auth_manager = codex_login::AuthManager::from_auth_for_testing(
+        codex_login::CodexAuth::from_api_key("sk-test"),
+    );
+
+    send_track_events(
+        &auth_manager,
+        &destination,
+        vec![
+            sample_regular_track_event("skill-event"),
+            sample_accepted_line_fingerprint_event("other-event"),
+        ],
+    )
+    .await;
+
+    let contents = fs::read_to_string(&capture_path).expect("read capture file");
+    let payloads = contents
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse capture line"))
+        .collect::<Vec<_>>();
+    assert_eq!(payloads.len(), 2);
+    let events = payloads
+        .iter()
+        .flat_map(|payload| payload["events"].as_array().expect("events array"))
+        .collect::<Vec<_>>();
+    for event in &events {
+        let event_params = event["event_params"].as_object().expect("event params");
+        for server_owned_field in [
+            "auth_mode",
+            "api_organization_id",
+            "api_project_id",
+            "api_key_tracking_id",
+        ] {
+            assert!(!event_params.contains_key(server_owned_field));
+        }
+    }
+    let delivered_events = events
+        .iter()
+        .map(|event| {
+            serde_json::json!({
+                "event_type": event["event_type"],
+                "plugin_id": event["event_params"]["plugin_id"],
+                "thread_id": event["event_params"]["thread_id"],
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        delivered_events,
+        vec![
+            serde_json::json!({
+                "event_type": "skill_invocation",
+                "plugin_id": null,
+                "thread_id": "skill-event",
+            }),
+            serde_json::json!({
+                "event_type": "codex_accepted_line_fingerprints",
+                "plugin_id": null,
+                "thread_id": "other-event",
+            }),
+        ]
+    );
+
+    fs::remove_file(capture_path).expect("remove capture file");
+}
+
 #[test]
 #[cfg(debug_assertions)]
 fn capture_write_failure_still_consumes_delivery() {
@@ -289,11 +362,13 @@ fn sample_thread_archive_request() -> ClientRequest {
 fn sample_thread(thread_id: &str) -> Thread {
     Thread {
         id: thread_id.to_string(),
+        extra: None,
         session_id: format!("session-{thread_id}"),
         forked_from_id: None,
         parent_thread_id: None,
         preview: "first prompt".to_string(),
         ephemeral: false,
+        history_mode: Default::default(),
         model_provider: "openai".to_string(),
         created_at: 1,
         updated_at: 2,
@@ -321,11 +396,12 @@ fn sample_thread_start_response() -> ClientResponsePayload {
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
-        approval_policy: AppServerAskForApproval::OnFailure,
+        approval_policy: AppServerAskForApproval::OnRequest,
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        multi_agent_mode: Default::default(),
     })
 }
 
@@ -338,11 +414,12 @@ fn sample_thread_resume_response() -> ClientResponsePayload {
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
-        approval_policy: AppServerAskForApproval::OnFailure,
+        approval_policy: AppServerAskForApproval::OnRequest,
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        multi_agent_mode: Default::default(),
         initial_turns_page: None,
     })
 }
@@ -356,11 +433,12 @@ fn sample_thread_fork_response() -> ClientResponsePayload {
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
-        approval_policy: AppServerAskForApproval::OnFailure,
+        approval_policy: AppServerAskForApproval::OnRequest,
         approvals_reviewer: AppServerApprovalsReviewer::User,
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        multi_agent_mode: Default::default(),
     })
 }
 

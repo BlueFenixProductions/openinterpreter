@@ -55,7 +55,7 @@ pub(crate) fn inject_no_tool_call_format_error(stream: ResponseStream) -> Respon
                                     text: MINI_SWE_AGENT_NO_TOOL_CALL_ERROR.to_string(),
                                 }],
                                 phase: None,
-                                metadata: None,
+                                internal_chat_message_metadata_passthrough: None,
                             })))
                             .await
                             .is_err()
@@ -86,11 +86,13 @@ pub(crate) fn inject_no_tool_call_format_error(stream: ResponseStream) -> Respon
                 | Ok(ResponseEvent::OutputTextDelta(_))
                 | Ok(ResponseEvent::ToolCallInputDelta { .. })
                 | Ok(ResponseEvent::ReasoningSummaryDelta { .. })
+                | Ok(ResponseEvent::ReasoningSummaryDone { .. })
                 | Ok(ResponseEvent::ReasoningContentDelta { .. })
                 | Ok(ResponseEvent::ReasoningSummaryPartAdded { .. })
                 | Ok(ResponseEvent::RateLimits(_))
                 | Ok(ResponseEvent::ModelsEtag(_))
                 | Ok(ResponseEvent::TurnModerationMetadata(_))
+                | Ok(ResponseEvent::SafetyBuffering(_))
                 | Ok(ResponseEvent::OutputItemDone(_))
                 | Err(_) => {}
             }
@@ -354,6 +356,7 @@ fn build_messages(items: &[ResponseItem]) -> Result<Vec<Value>, serde_json::Erro
             | ResponseItem::Compaction { .. }
             | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::AdditionalTools { .. }
             | ResponseItem::Other => {}
         }
     }
@@ -573,6 +576,7 @@ fn mini_swe_agent_tool_output_content(output: &FunctionCallOutputPayload) -> Str
             .filter_map(|item| match item {
                 FunctionCallOutputContentItem::InputText { text } => Some(text.as_str()),
                 FunctionCallOutputContentItem::InputImage { .. }
+                | FunctionCallOutputContentItem::InputVideo { .. }
                 | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
             })
             .collect::<Vec<_>>()
@@ -597,7 +601,11 @@ mod tests {
             description: "bash".to_string(),
             strict: false,
             defer_loading: None,
-            parameters: codex_tools::JsonSchema::object(BTreeMap::new(), None, None),
+            parameters: codex_tools::JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
             output_schema: None,
         })
     }
@@ -635,14 +643,14 @@ mod tests {
     fn first_user_message_is_wrapped_with_mini_prompt() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
-                id: Some("user".to_string()),
+                id: Some(std::convert::identity("user".to_string())),
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
                     text: "do the task".to_string(),
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             tools: vec![test_bash_tool()],
             ..Prompt::default()
@@ -672,33 +680,33 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Message {
-                    id: Some("user".to_string()),
+                    id: Some(std::convert::identity("user".to_string())),
                     role: "user".to_string(),
                     content: vec![ContentItem::InputText {
                         text: "do the task".to_string(),
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
-                    id: Some("assistant".to_string()),
+                    id: Some(std::convert::identity("assistant".to_string())),
                     role: "assistant".to_string(),
                     content: vec![ContentItem::OutputText {
                         text: "I will run pwd.\n\n```bash\npwd\n```".to_string(),
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
-                    id: Some("call".to_string()),
+                    id: Some(std::convert::identity("call".to_string())),
                     name: "bash".to_string(),
                     namespace: None,
                     arguments: "{\"command\":\"pwd\"}".to_string(),
                     call_id: "bash:0".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
@@ -707,7 +715,7 @@ mod tests {
                         "{\n  \"returncode\": 0,\n  \"output\": \"/workspace\\n\"\n}".to_string(),
                     ),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             tools: vec![test_bash_tool()],
@@ -732,14 +740,14 @@ mod tests {
     #[test]
     fn detects_terminal_submit_call() {
         let item = ResponseItem::FunctionCall {
-            id: Some("call".to_string()),
+            id: Some(std::convert::identity("call".to_string())),
             name: "bash".to_string(),
             namespace: None,
             arguments: "{\"command\":\" echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\\n\"}"
                 .to_string(),
             call_id: "bash:0".to_string(),
 
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
 
         assert!(is_terminal_submit_call(&item));
@@ -754,14 +762,14 @@ mod tests {
             .expect("send created");
         tx_event
             .send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
-                id: Some("assistant".to_string()),
+                id: Some(std::convert::identity("assistant".to_string())),
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
                     text: "I forgot the tool.".to_string(),
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             })))
             .await
             .expect("send message");
@@ -812,27 +820,27 @@ mod tests {
             .expect("send created");
         tx_event
             .send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
-                id: Some("assistant".to_string()),
+                id: Some(std::convert::identity("assistant".to_string())),
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
                     text: "Running pwd.".to_string(),
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             })))
             .await
             .expect("send message");
         tx_event
             .send(Ok(ResponseEvent::OutputItemDone(
                 ResponseItem::FunctionCall {
-                    id: Some("call".to_string()),
+                    id: Some(std::convert::identity("call".to_string())),
                     name: "bash".to_string(),
                     namespace: None,
                     arguments: "{\"command\":\"pwd\"}".to_string(),
                     call_id: "bash:0".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             )))
             .await

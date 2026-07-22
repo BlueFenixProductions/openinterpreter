@@ -164,6 +164,7 @@ pub(crate) fn build_request_for_profile(
         messages,
         system,
         tools,
+        tool_choice: None,
         thinking,
         // The `clear_thinking_20251015` context edit is only valid when thinking
         // is enabled or adaptive; Anthropic rejects the request otherwise (e.g.
@@ -269,12 +270,13 @@ pub(crate) fn build_claude_code_responses_shaped_request(
         model: model_info.slug.clone(),
         instructions: system_prompt,
         input: prompt.get_formatted_input().to_vec(),
-        tools,
+        tools: Some(tools),
         tool_choice: "auto".to_string(),
         parallel_tool_calls: prompt.parallel_tool_calls,
         reasoning: None,
         store: false,
         stream: true,
+        stream_options: None,
         include: Vec::new(),
         service_tier: None,
         prompt_cache_key,
@@ -348,6 +350,7 @@ pub(crate) fn build_title_request_for_profile(
         messages,
         system,
         tools,
+        tool_choice: None,
         thinking: None,
         context_management: None,
         output_config,
@@ -402,7 +405,10 @@ fn anthropic_output_effort(effort: ReasoningEffortConfig) -> String {
     match effort {
         ReasoningEffortConfig::Minimal | ReasoningEffortConfig::Low => "low".to_string(),
         ReasoningEffortConfig::Medium => "medium".to_string(),
-        ReasoningEffortConfig::High | ReasoningEffortConfig::XHigh => "high".to_string(),
+        ReasoningEffortConfig::High
+        | ReasoningEffortConfig::XHigh
+        | ReasoningEffortConfig::Max
+        | ReasoningEffortConfig::Ultra => "high".to_string(),
         ReasoningEffortConfig::None => "none".to_string(),
         ReasoningEffortConfig::Custom(value) => value,
     }
@@ -469,7 +475,7 @@ fn parse_leading_minor_version(suffix: &str) -> Option<u32> {
 }
 
 fn current_local_date() -> chrono::NaiveDate {
-    if let Ok(fake_time) = std::env::var("HARNESS_LAB_FAKE_TIME") {
+    if let Ok(fake_time) = std::env::var("OPENINTERPRETER_TEST_TIME") {
         let date = fake_time
             .split_once(' ')
             .map_or(fake_time.as_str(), |(date, _)| date);
@@ -684,6 +690,7 @@ fn build_messages(
             | ResponseItem::Compaction { .. }
             | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::AdditionalTools { .. }
             | ResponseItem::Other => {
                 flush_pending_tool_results(
                     &mut messages,
@@ -784,6 +791,7 @@ fn tool_result_body_stays_structured(body: &FunctionCallOutputBody) -> bool {
         matches!(
             item,
             FunctionCallOutputContentItem::InputImage { .. }
+                | FunctionCallOutputContentItem::InputVideo { .. }
                 | FunctionCallOutputContentItem::EncryptedContent { .. }
         )
     })
@@ -980,6 +988,10 @@ fn map_tool_result_content_item(
                 }
             })
         }
+        FunctionCallOutputContentItem::InputVideo { .. } => Some(AnthropicToolResultBlock::Text {
+            text: "[video omitted by claude-code harness]".to_string(),
+            cache_control: None,
+        }),
         FunctionCallOutputContentItem::EncryptedContent { .. } => None,
     }
 }
@@ -2492,7 +2504,11 @@ mod tests {
             description: "bash".to_string(),
             strict: false,
             defer_loading: None,
-            parameters: codex_tools::JsonSchema::object(BTreeMap::new(), None, None),
+            parameters: codex_tools::JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
             output_schema: None,
         })
     }
@@ -2568,7 +2584,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2578,7 +2594,7 @@ mod tests {
                         .to_string(),
                     call_id: "toolu_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
@@ -2587,7 +2603,7 @@ mod tests {
                         "(Bash completed with no output)".to_string(),
                     ),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2596,14 +2612,14 @@ mod tests {
                     arguments: "{\"file_path\":\"/tmp/input.txt\"}".to_string(),
                     call_id: "toolu_2".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
                     call_id: "toolu_2".to_string(),
                     output: FunctionCallOutputPayload::from_text("1\tREAD_OK".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -2619,9 +2635,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
         assert_eq!(request.model, "claude-sonnet-4-6");
@@ -2739,7 +2755,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2748,7 +2764,7 @@ mod tests {
                     arguments: "{\"command\":\"git clone repo\"}".to_string(),
                     call_id: "toolu_clone".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2757,14 +2773,14 @@ mod tests {
                     arguments: "{\"command\":\"python3 --version\"}".to_string(),
                     call_id: "toolu_python".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
                     call_id: "toolu_python".to_string(),
                     output: FunctionCallOutputPayload::from_text("Python 3.13.7\n".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
@@ -2773,7 +2789,7 @@ mod tests {
                         "Cloning into '/app/pyknotid'...\n\n".to_string(),
                     ),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -2789,9 +2805,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -2826,7 +2842,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2840,7 +2856,7 @@ mod tests {
                     .to_string(),
                     call_id: "toolu_edit".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -2856,9 +2872,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -2890,7 +2906,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,},
+                    internal_chat_message_metadata_passthrough: None,},
                 ResponseItem::Message {
                     id: None,
                     role: "user".to_string(),
@@ -2899,7 +2915,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,},
+                    internal_chat_message_metadata_passthrough: None,},
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -2914,9 +2930,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -2954,7 +2970,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2964,7 +2980,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -2981,15 +2997,15 @@ mod tests {
     const QA_TESTING_SKILLS_INSTRUCTIONS: &str = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file.\n### Available skills\n- qa-testing: Run the project's QA test plan against a live build (file: /home/user/skills/.system/qa-testing/SKILL.md)\n### How to use skills\n- Discovery: ...\n</skills_instructions>";
 
     #[test]
-    fn session_skills_replace_reference_skills_in_reminder() {
+    fn session_skills_replace_default_skills_in_reminder() {
         let prompt = skills_prompt(QA_TESTING_SKILLS_INSTRUCTIONS);
 
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -3004,7 +3020,7 @@ mod tests {
             text,
             "<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- qa-testing: Run the project's QA test plan against a live build\n</system-reminder>\n"
         );
-        // The captured reference-trace skills must not leak into the request.
+        // Skills that are not present in the session must not leak into the request.
         assert!(!request_json.contains("update-config"));
         assert!(!request_json.contains("claude-api"));
     }
@@ -3016,9 +3032,9 @@ mod tests {
         let request = build_request_for_profile(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
             ClaudeCodeProfile::Bare,
         )
         .expect("build request");
@@ -3042,7 +3058,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(temp_dir.path().to_path_buf()),
             tools: vec![],
@@ -3057,9 +3073,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-opus-4-7"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -3087,7 +3103,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![test_bash_tool()],
@@ -3102,9 +3118,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-opus-4-7"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -3127,7 +3143,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -3164,9 +3180,19 @@ mod tests {
                 format: None,
             })
         );
+        let stable_child_prompt = request.system[2]
+            .text
+            .lines()
+            .filter(|line| {
+                !line.starts_with("Platform: ")
+                    && !line.starts_with("Shell: ")
+                    && !line.starts_with("OS Version: ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(
-            request.system[2].text,
-            "You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.\n\nYour strengths:\n- Searching for code, configurations, and patterns across large codebases\n- Analyzing multiple files to understand system architecture\n- Investigating complex questions that require exploring many files\n- Performing multi-step research tasks\n\nGuidelines:\n- For file searches: search broadly when you don't know where something lives. Use Read when you know the specific file path.\n- For analysis: Start broad and narrow down. Use multiple search strategies if the first doesn't yield results.\n- Be thorough: Check multiple locations, consider different naming conventions, look for related files.\n- NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one.\n- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested.\n\nNotes:\n- Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.\n- In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.\n- For clear communication with the user the assistant MUST avoid using emojis.\n- Do not use a colon before tool calls. Text like \"Let me read the file:\" followed by a read tool call should just be \"Let me read the file.\" with a period.\n\nHere is useful information about the environment you are running in:\n<env>\nWorking directory: /tmp/workspace\nIs directory a git repo: No\nPlatform: darwin\nShell: zsh\nOS Version: Darwin 25.2.0\n</env>\nYou are powered by the model named Sonnet 4.6. The exact model ID is claude-sonnet-4-6.\n\nAssistant knowledge cutoff is August 2025."
+            stable_child_prompt,
+            "You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.\n\nYour strengths:\n- Searching for code, configurations, and patterns across large codebases\n- Analyzing multiple files to understand system architecture\n- Investigating complex questions that require exploring many files\n- Performing multi-step research tasks\n\nGuidelines:\n- For file searches: search broadly when you don't know where something lives. Use Read when you know the specific file path.\n- For analysis: Start broad and narrow down. Use multiple search strategies if the first doesn't yield results.\n- Be thorough: Check multiple locations, consider different naming conventions, look for related files.\n- NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one.\n- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested.\n\nNotes:\n- Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.\n- In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.\n- For clear communication with the user the assistant MUST avoid using emojis.\n- Do not use a colon before tool calls. Text like \"Let me read the file:\" followed by a read tool call should just be \"Let me read the file.\" with a period.\n\nHere is useful information about the environment you are running in:\n<env>\nWorking directory: /tmp/workspace\nIs directory a git repo: No\n</env>\nYou are powered by the model named Sonnet 4.6. The exact model ID is claude-sonnet-4-6.\n\nAssistant knowledge cutoff is August 2025."
         );
     }
 
@@ -3182,7 +3208,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -3191,7 +3217,7 @@ mod tests {
                     arguments: "{\"command\":\"echo \\\"TodoWrite done\\\"\"}".to_string(),
                     call_id: "toolu_bash".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
@@ -3200,7 +3226,7 @@ mod tests {
                         "\nTodoWrite done\n\n   ".to_string(),
                     ),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -3216,9 +3242,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -3245,7 +3271,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3255,7 +3281,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3265,7 +3291,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -3281,9 +3307,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -3324,7 +3350,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
                 id: None,
@@ -3333,7 +3359,7 @@ mod tests {
                 arguments: todos,
                 call_id: "todo_1".to_string(),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3342,7 +3368,7 @@ mod tests {
                     CLAUDE_TODO_WRITE_SUCCESS_MESSAGE.to_string(),
                 ),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
         ];
         for index in 1..=CLAUDE_CODE_TODO_REMINDER_STALENESS_THRESHOLD {
@@ -3358,7 +3384,7 @@ mod tests {
                 .to_string(),
                 call_id: format!("read_{index}"),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
             input.push(ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3367,7 +3393,7 @@ mod tests {
                     "{index}\tCHECKPOINT_{index:02}"
                 )),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
         }
         let prompt = Prompt {
@@ -3385,9 +3411,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
         let serialized = serde_json::to_string(&request).expect("serialize request");
@@ -3419,7 +3445,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
                 id: None,
@@ -3428,7 +3454,7 @@ mod tests {
                 arguments: todos,
                 call_id: "todo_1".to_string(),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3437,7 +3463,7 @@ mod tests {
                     CLAUDE_TODO_WRITE_SUCCESS_MESSAGE.to_string(),
                 ),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
         ];
         for index in 1..CLAUDE_CODE_TODO_REMINDER_STALENESS_THRESHOLD {
@@ -3451,7 +3477,7 @@ mod tests {
                 .to_string(),
                 call_id: format!("read_{index}"),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
             input.push(ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3460,7 +3486,7 @@ mod tests {
                     "{index}\tCHECKPOINT_{index:02}"
                 )),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
         }
         let prompt = Prompt {
@@ -3478,9 +3504,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
         let serialized = serde_json::to_string(&request).expect("serialize request");
@@ -3501,7 +3527,7 @@ mod tests {
             }],
             phase: None,
 
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
         for index in 1..=CLAUDE_CODE_TODO_REMINDER_STALENESS_THRESHOLD {
             if index == 5 || index == 9 {
@@ -3513,7 +3539,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 });
             }
             input.push(ResponseItem::FunctionCall {
@@ -3526,14 +3552,14 @@ mod tests {
                 .to_string(),
                 call_id: format!("grep_{index}"),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
             input.push(ResponseItem::FunctionCallOutput {
                 id: None,
                 call_id: format!("grep_{index}"),
                 output: FunctionCallOutputPayload::from_text(format!("MATCH_{index}")),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
         }
         let prompt = Prompt {
@@ -3551,9 +3577,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
         let tool_result_texts = request
@@ -3605,7 +3631,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
                 id: None,
@@ -3614,7 +3640,7 @@ mod tests {
                 arguments: todos,
                 call_id: "todo_1".to_string(),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3623,7 +3649,7 @@ mod tests {
                     CLAUDE_TODO_WRITE_SUCCESS_MESSAGE.to_string(),
                 ),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
         ];
         for index in 1..=7 {
@@ -3636,7 +3662,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 });
             }
             input.push(ResponseItem::FunctionCall {
@@ -3649,7 +3675,7 @@ mod tests {
                 .to_string(),
                 call_id: format!("read_{index}"),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
             input.push(ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3658,7 +3684,7 @@ mod tests {
                     "{index}\tCHECKPOINT_{index:02}"
                 )),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
         }
         let prompt = Prompt {
@@ -3676,9 +3702,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
         let serialized = serde_json::to_string(&request).expect("serialize request");
@@ -3706,7 +3732,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
                 id: None,
@@ -3715,7 +3741,7 @@ mod tests {
                 arguments: todos,
                 call_id: "todo_1".to_string(),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3724,7 +3750,7 @@ mod tests {
                     CLAUDE_TODO_WRITE_SUCCESS_MESSAGE.to_string(),
                 ),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
         ];
         for index in 1..8 {
@@ -3738,7 +3764,7 @@ mod tests {
                 .to_string(),
                 call_id: format!("read_{index}"),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
             input.push(ResponseItem::FunctionCallOutput {
                 id: None,
@@ -3747,7 +3773,7 @@ mod tests {
                     "{index}\tCHECKPOINT_{index:02}"
                 )),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
         }
         let prompt = Prompt {
@@ -3765,9 +3791,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
         let serialized = serde_json::to_string(&request).expect("serialize request");
@@ -3791,7 +3817,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3803,7 +3829,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3813,7 +3839,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -3829,9 +3855,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -3847,7 +3873,7 @@ mod tests {
     }
 
     #[test]
-    fn build_tools_matches_reference_claude_core_surface() {
+    fn build_tools_matches_expected_claude_core_surface() {
         let parameters: codex_tools::JsonSchema = serde_json::from_value(serde_json::json!({
             "type": "object",
             "properties": {},
@@ -3969,7 +3995,12 @@ mod tests {
             },
         ];
 
-        let tools = build_tools(&tools, false, ClaudeCodeProfile::Full).expect("build tools");
+        let tools = build_tools(
+            &tools,
+            /*is_child_agent_request*/ false,
+            ClaudeCodeProfile::Full,
+        )
+        .expect("build tools");
 
         assert_eq!(
             tools
@@ -4078,7 +4109,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -4088,7 +4119,7 @@ mod tests {
                         .to_string(),
                     call_id: "toolu_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
@@ -4097,7 +4128,7 @@ mod tests {
                         "(Bash completed with no output)".to_string(),
                     ),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -4107,7 +4138,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -4117,7 +4148,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -4133,9 +4164,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-sonnet-4-6"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -4179,7 +4210,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -4234,7 +4265,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Other,
                 ResponseItem::Message {
@@ -4247,7 +4278,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -4257,7 +4288,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             cwd: Some(PathBuf::from("/tmp/workspace")),
@@ -4303,7 +4334,12 @@ mod tests {
                 image_url: "data:image/png;base64,AAAB".to_string(),
                 detail: None,
             }]);
-        let content = build_claude_tool_result_content(Some("Read"), &body, false, None);
+        let content = build_claude_tool_result_content(
+            Some("Read"),
+            &body,
+            /*is_error*/ false,
+            /*todo_reminder_text*/ None,
+        );
         let json = serde_json::to_value(&content).expect("serialize tool result");
         assert_eq!(
             json,
@@ -4343,7 +4379,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -4358,9 +4394,9 @@ mod tests {
         let request = build_request(
             &prompt,
             &test_model_info("claude-opus-4-7"),
-            None,
+            /*effort*/ None,
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -4386,7 +4422,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -4403,7 +4439,7 @@ mod tests {
             &test_model_info("claude-opus-4-7"),
             Some(ReasoningEffortConfig::Medium),
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -4429,7 +4465,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -4446,7 +4482,7 @@ mod tests {
             &test_model_info("anthropic/claude-opus-4.7"),
             Some(ReasoningEffortConfig::XHigh),
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -4472,7 +4508,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -4489,7 +4525,7 @@ mod tests {
             &test_model_info("anthropic/claude-sonnet-4.6"),
             Some(ReasoningEffortConfig::Medium),
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
@@ -4515,7 +4551,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![],
@@ -4532,13 +4568,15 @@ mod tests {
             &thinking_only_model_info("claude-haiku-4-5-20251001"),
             Some(ReasoningEffortConfig::High),
             "session-123",
-            None,
+            /*session_source*/ None,
         )
         .expect("build request");
 
         assert_eq!(
             request.thinking,
-            Some(AnthropicThinkingConfig::enabled(31_999))
+            Some(AnthropicThinkingConfig::enabled(
+                /*budget_tokens*/ 31_999
+            ))
         );
         assert_eq!(request.output_config, None);
     }
@@ -4549,7 +4587,11 @@ mod tests {
             description: name.to_string(),
             strict: false,
             defer_loading: None,
-            parameters: codex_tools::JsonSchema::object(BTreeMap::new(), None, None),
+            parameters: codex_tools::JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
             output_schema: None,
         })
     }
@@ -4569,7 +4611,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![
@@ -4589,7 +4631,7 @@ mod tests {
         let request = build_claude_code_responses_shaped_request(
             &prompt,
             &test_model_info("deepseek-v4-pro"),
-            None,
+            /*session_source*/ None,
             ClaudeCodeProfile::Bare,
             Some("thread-123".to_string()),
         )
@@ -4605,6 +4647,8 @@ mod tests {
         // Tools are flat Responses-style function tools, limited to the bare set.
         let tool_names: Vec<&str> = request
             .tools
+            .as_ref()
+            .expect("tools")
             .iter()
             .map(|tool| {
                 assert_eq!(tool["type"], "function");
@@ -4627,7 +4671,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             cwd: Some(PathBuf::from("/tmp/workspace")),
             tools: vec![test_bash_tool()],
@@ -4642,16 +4686,17 @@ mod tests {
         let request = build_claude_code_responses_shaped_request(
             &prompt,
             &test_model_info("claude-opus-4-7"),
-            None,
+            /*session_source*/ None,
             ClaudeCodeProfile::Full,
-            None,
+            /*prompt_cache_key*/ None,
         )
         .expect("build full chat shaping");
 
         // The full profile renders the rich Claude Code agent system prompt.
         assert!(request.instructions.contains("Claude Code"));
         // Tools are flat Responses-style function tools and include Bash.
-        assert!(request.tools.iter().all(|tool| tool["type"] == "function"));
-        assert!(request.tools.iter().any(|tool| tool["name"] == "Bash"));
+        let tools = request.tools.as_ref().expect("tools");
+        assert!(tools.iter().all(|tool| tool["type"] == "function"));
+        assert!(tools.iter().any(|tool| tool["name"] == "Bash"));
     }
 }

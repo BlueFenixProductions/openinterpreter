@@ -2055,6 +2055,29 @@
             },
             "method": {
               "enum": [
+                "account/workspaceMessages/read"
+              ],
+              "title": "Account/workspaceMessages/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/workspaceMessages/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "account/sendAddCreditsNudgeEmail"
               ],
               "title": "Account/sendAddCreditsNudgeEmailRequestMethod",
@@ -2522,7 +2545,7 @@
         "cwd": {
           "anyOf": [
             {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             {
               "type": "null"
@@ -3042,6 +3065,10 @@
         "experimentalApi": {
           "default": false,
           "description": "Opt into receiving experimental API methods and fields.",
+          "type": "boolean"
+        },
+        "mcpServerOpenaiFormElicitation": {
+          "description": "Allow downstream MCP servers to request OpenAI extended form elicitations.",
           "type": "boolean"
         },
         "optOutNotificationMethods": {
@@ -3791,6 +3818,27 @@
             "requestedSchema": {
               "$ref": "#/definitions/McpElicitationSchema"
             }
+          },
+          "required": [
+            "message",
+            "mode",
+            "requestedSchema"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "_meta": true,
+            "message": {
+              "type": "string"
+            },
+            "mode": {
+              "enum": [
+                "openai/form"
+              ],
+              "type": "string"
+            },
+            "requestedSchema": true
           },
           "required": [
             "message",
@@ -5214,6 +5262,26 @@
           "properties": {
             "method": {
               "enum": [
+                "model/safetyBuffering/updated"
+              ],
+              "title": "Model/safetyBuffering/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ModelSafetyBufferingUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Model/safetyBuffering/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "warning"
               ],
               "title": "WarningNotificationMethod",
@@ -5976,7 +6044,10 @@
           {
             "properties": {
               "email": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "planType": {
                 "$ref": "#/definitions/v2/PlanType"
@@ -6479,6 +6550,24 @@
               "null"
             ]
           },
+          "iconAssets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "iconDarkAssets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -6783,6 +6872,7 @@
         "enum": [
           "auto",
           "prompt",
+          "writes",
           "approve"
         ],
         "type": "string"
@@ -6937,7 +7027,6 @@
           {
             "enum": [
               "untrusted",
-              "on-failure",
               "on-request",
               "never"
             ],
@@ -7003,6 +7092,13 @@
             "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.\n\nChatGPT auth tokens are supplied by an external host app and are only stored in memory. Token refresh must be handled by the external host app.",
             "enum": [
               "chatgptAuthTokens"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Backend auth supplied as request headers.",
+            "enum": [
+              "headers"
             ],
             "type": "string"
           },
@@ -7117,6 +7213,7 @@
                 "type": "string"
               },
               "path": {
+                "description": "Absolute path for the root in the selected environment.",
                 "type": "string"
               },
               "type": {
@@ -7143,6 +7240,7 @@
           {
             "enum": [
               "contextWindowExceeded",
+              "sessionBudgetExceeded",
               "usageLimitExceeded",
               "serverOverloaded",
               "cyberPolicy",
@@ -8468,6 +8566,16 @@
               "object",
               "null"
             ]
+          },
+          "models": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ModelsRequirements"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object"
@@ -8732,6 +8840,13 @@
       "ConsumeAccountRateLimitResetCreditParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "creditId": {
+            "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next available credit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "idempotencyKey": {
             "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when retrying that attempt.",
             "type": "string"
@@ -10285,7 +10400,7 @@
         ]
       },
       "FunctionCallOutputContentItem": {
-        "description": "Responses API compatible content items that can be returned by a tool call. This is a subset of ContentItem with the types we support as function call outputs.",
+        "description": "Structured content items that can be returned by a tool call.\n\nMost variants map directly to Responses API content. Harness adapters may translate additional media variants into their provider-specific wire shape.",
         "oneOf": [
           {
             "properties": {
@@ -10335,6 +10450,32 @@
               "type"
             ],
             "title": "InputImageFunctionCallOutputContentItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "input_video"
+                ],
+                "title": "InputVideoFunctionCallOutputContentItemType",
+                "type": "string"
+              },
+              "video_url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "video_url"
+            ],
+            "title": "InputVideoFunctionCallOutputContentItem",
             "type": "object"
           },
           {
@@ -10451,6 +10592,28 @@
           "summary"
         ],
         "title": "GetAccountTokenUsageResponse",
+        "type": "object"
+      },
+      "GetWorkspaceMessagesResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "featureEnabled": {
+            "description": "Whether the workspace-message backend route is available for this client.",
+            "type": "boolean"
+          },
+          "messages": {
+            "description": "Active workspace messages returned by the backend.",
+            "items": {
+              "$ref": "#/definitions/v2/WorkspaceMessage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "featureEnabled",
+          "messages"
+        ],
+        "title": "GetWorkspaceMessagesResponse",
         "type": "object"
       },
       "GitInfo": {
@@ -11199,6 +11362,18 @@
           }
         ]
       },
+      "InternalChatMessageMetadataPassthrough": {
+        "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
+        "properties": {
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "InterpreterHarness": {
         "properties": {
           "description": {
@@ -11765,6 +11940,17 @@
           },
           {
             "properties": {
+              "appBrand": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/LoginAppBrand"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "codexStreamlinedLogin": {
                 "type": "boolean"
               },
@@ -11774,6 +11960,9 @@
                 ],
                 "title": "Chatgptv2::LoginAccountParamsType",
                 "type": "string"
+              },
+              "useHostedLoginSuccessPage": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -11927,6 +12116,13 @@
           }
         ],
         "title": "LoginAccountResponse"
+      },
+      "LoginAppBrand": {
+        "enum": [
+          "codex",
+          "chatgpt"
+        ],
+        "type": "string"
       },
       "LogoutAccountResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -12305,6 +12501,12 @@
           },
           "success": {
             "type": "boolean"
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -12326,6 +12528,12 @@
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -12360,6 +12568,12 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "McpServerRefreshResponse",
         "type": "object"
+      },
+      "McpServerStartupFailureReason": {
+        "enum": [
+          "reauthenticationRequired"
+        ],
+        "type": "string"
       },
       "McpServerStartupState": {
         "enum": [
@@ -12432,6 +12646,16 @@
               "null"
             ]
           },
+          "failureReason": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/McpServerStartupFailureReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -12495,6 +12719,47 @@
           "content"
         ],
         "title": "McpServerToolCallResponse",
+        "type": "object"
+      },
+      "McpToolCallAppContext": {
+        "properties": {
+          "actionName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "appName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connectorId": {
+            "type": "string"
+          },
+          "linkId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resourceUri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "templateId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connectorId"
+        ],
         "type": "object"
       },
       "McpToolCallError": {
@@ -12663,6 +12928,13 @@
             "default": [],
             "items": {
               "$ref": "#/definitions/v2/SessionMigration"
+            },
+            "type": "array"
+          },
+          "skills": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/SkillMigration"
             },
             "type": "array"
           },
@@ -12921,6 +13193,51 @@
         "title": "ModelReroutedNotification",
         "type": "object"
       },
+      "ModelSafetyBufferingUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "fasterModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "showBufferingUi": {
+            "type": "boolean"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "useCases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "model",
+          "reasons",
+          "showBufferingUi",
+          "threadId",
+          "turnId",
+          "useCases"
+        ],
+        "title": "ModelSafetyBufferingUpdatedNotification",
+        "type": "object"
+      },
       "ModelServiceTier": {
         "properties": {
           "description": {
@@ -12998,6 +13315,46 @@
         ],
         "title": "ModelVerificationNotification",
         "type": "object"
+      },
+      "ModelsRequirements": {
+        "properties": {
+          "newThread": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/NewThreadModelDefaults"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "MultiAgentMode": {
+        "description": "Controls the effective multi-agent delegation instructions for a turn. `custom` means the configured mode hint defines the policy instead of a built-in policy.",
+        "oneOf": [
+          {
+            "enum": [
+              "explicitRequestOnly",
+              "proactive"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "custom": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "custom"
+            ],
+            "title": "CustomMultiAgentMode",
+            "type": "object"
+          }
+        ]
       },
       "NetworkAccess": {
         "enum": [
@@ -13136,6 +13493,33 @@
           "deny"
         ],
         "type": "string"
+      },
+      "NewThreadModelDefaults": {
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelReasoningEffort": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serviceTier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "NonSteerableTurnKind": {
         "enum": [
@@ -13283,6 +13667,10 @@
       },
       "PermissionProfileSummary": {
         "properties": {
+          "allowed": {
+            "description": "Whether the effective requirements allow selecting this profile.",
+            "type": "boolean"
+          },
           "description": {
             "description": "Optional user-facing description for display in clients.",
             "type": [
@@ -13296,6 +13684,7 @@
           }
         },
         "required": [
+          "allowed",
           "id"
         ],
         "type": "object"
@@ -13499,6 +13888,13 @@
         ],
         "type": "string"
       },
+      "PluginInstallPolicySource": {
+        "enum": [
+          "WORKSPACE_SETTING",
+          "IMPLICIT_CANONICAL_APP"
+        ],
+        "type": "string"
+      },
       "PluginInstallResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -13640,8 +14036,26 @@
             ],
             "description": "Local logo path, resolved from the installed plugin package."
           },
+          "logoDark": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Local dark-mode logo path, resolved from the installed plugin package."
+          },
           "logoUrl": {
             "description": "Remote logo URL from the plugin catalog.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "logoUrlDark": {
+            "description": "Remote dark-mode logo URL from the plugin catalog.",
             "type": [
               "string",
               "null"
@@ -14289,6 +14703,40 @@
             "type": "object"
           },
           {
+            "properties": {
+              "package": {
+                "type": "string"
+              },
+              "registry": {
+                "description": "Optional HTTPS registry URL. Authentication stays in the user's npm config.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "npm"
+                ],
+                "title": "NpmPluginSourceType",
+                "type": "string"
+              },
+              "version": {
+                "description": "Optional npm version or version range.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "package",
+              "type"
+            ],
+            "title": "NpmPluginSource",
+            "type": "object"
+          },
+          {
             "description": "The plugin is available in the remote catalog. Download metadata is kept server-side and is not exposed through the app-server API.",
             "properties": {
               "type": {
@@ -14329,6 +14777,16 @@
           },
           "installPolicy": {
             "$ref": "#/definitions/v2/PluginInstallPolicy"
+          },
+          "installPolicySource": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PluginInstallPolicySource"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "installed": {
             "type": "boolean"
@@ -14381,6 +14839,14 @@
           },
           "source": {
             "$ref": "#/definitions/v2/PluginSource"
+          },
+          "version": {
+            "default": null,
+            "description": "Version advertised by the remote marketplace backend when available.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -14556,17 +15022,91 @@
         ],
         "type": "string"
       },
+      "RateLimitResetCredit": {
+        "properties": {
+          "description": {
+            "description": "Backend-provided display description for this credit, or `null` when unavailable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "description": "Unix timestamp in seconds when the credit expires, or `null` if it does not expire.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "grantedAt": {
+            "description": "Unix timestamp in seconds when the credit was granted.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Opaque backend identifier for this reset credit.",
+            "type": "string"
+          },
+          "resetType": {
+            "$ref": "#/definitions/v2/RateLimitResetType"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/RateLimitResetCreditStatus"
+          },
+          "title": {
+            "description": "Backend-provided display title for this credit, or `null` when unavailable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "grantedAt",
+          "id",
+          "resetType",
+          "status"
+        ],
+        "type": "object"
+      },
+      "RateLimitResetCreditStatus": {
+        "enum": [
+          "available",
+          "redeeming",
+          "redeemed",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "RateLimitResetCreditsSummary": {
         "properties": {
           "availableCount": {
             "format": "int64",
             "type": "integer"
+          },
+          "credits": {
+            "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known, while an empty array means details were fetched and no available credits were returned. The backend may cap this list, so its length can be less than `availableCount`.",
+            "items": {
+              "$ref": "#/definitions/v2/RateLimitResetCredit"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
           "availableCount"
         ],
         "type": "object"
+      },
+      "RateLimitResetType": {
+        "enum": [
+          "codexRateLimits",
+          "unknown"
+        ],
+        "type": "string"
       },
       "RateLimitSnapshot": {
         "properties": {
@@ -14691,13 +15231,6 @@
         ],
         "title": "RawResponseItemCompletedNotification",
         "type": "object"
-      },
-      "RealtimeConversationArchitecture": {
-        "enum": [
-          "realtimeapi",
-          "avas"
-        ],
-        "type": "string"
       },
       "RealtimeConversationVersion": {
         "enum": [
@@ -15202,10 +15735,16 @@
                 },
                 "type": "array"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15252,10 +15791,16 @@
                 },
                 "type": "array"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15300,10 +15845,16 @@
                   "null"
                 ]
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15343,10 +15894,17 @@
                   "null"
                 ]
               },
-              "metadata": {
+              "id": {
+                "description": "Legacy id field retained for compatibility with older payloads.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15380,10 +15938,16 @@
               "call_id": {
                 "type": "string"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15428,10 +15992,16 @@
               "execution": {
                 "type": "string"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15465,10 +16035,16 @@
               "call_id": {
                 "type": "string"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15499,13 +16075,19 @@
               "call_id": {
                 "type": "string"
               },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "input": {
                 "type": "string"
               },
-              "metadata": {
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15514,6 +16096,12 @@
               },
               "name": {
                 "type": "string"
+              },
+              "namespace": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "status": {
                 "type": [
@@ -15543,10 +16131,16 @@
               "call_id": {
                 "type": "string"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15589,10 +16183,16 @@
               "execution": {
                 "type": "string"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15635,10 +16235,16 @@
                   }
                 ]
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15668,16 +16274,15 @@
           {
             "properties": {
               "id": {
-                "description": "Existing provider ID retained on serialized history for compatibility.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
-              "metadata": {
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15717,10 +16322,16 @@
               "encrypted_content": {
                 "type": "string"
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15744,16 +16355,6 @@
           },
           {
             "properties": {
-              "metadata": {
-                "anyOf": [
-                  {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
               "type": {
                 "enum": [
                   "compaction_trigger"
@@ -15776,10 +16377,16 @@
                   "null"
                 ]
               },
-              "metadata": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "internal_chat_message_metadata_passthrough": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/v2/ResponseItemMetadata"
+                    "$ref": "#/definitions/v2/InternalChatMessageMetadataPassthrough"
                   },
                   {
                     "type": "null"
@@ -15817,23 +16424,6 @@
             "type": "object"
           }
         ]
-      },
-      "ResponseItemMetadata": {
-        "properties": {
-          "source_call_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "turn_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
       },
       "ResponsesApiWebSearchAction": {
         "oneOf": [
@@ -16498,6 +17088,17 @@
         ],
         "type": "object"
       },
+      "SkillMigration": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "SkillScope": {
         "enum": [
           "user",
@@ -16992,6 +17593,7 @@
             "description": "Optional Git metadata captured when the thread was created."
           },
           "id": {
+            "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
             "type": "string"
           },
           "modelProvider": {
@@ -17213,6 +17815,10 @@
         "title": "ThreadDeletedNotification",
         "type": "object"
       },
+      "ThreadExtra": {
+        "description": "Extra app-server data for a thread.",
+        "type": "object"
+      },
       "ThreadForkParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "There are two ways to fork a thread: 1. By thread_id: load the thread from disk by thread_id and fork it into a new thread. 2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using a non-empty path, the thread_id param will be ignored. Empty string path values are treated as absent.\n\nPrefer using thread_id whenever possible.",
@@ -17265,6 +17871,13 @@
           },
           "ephemeral": {
             "type": "boolean"
+          },
+          "lastTurnId": {
+            "description": "Optional last turn id to fork through, inclusive.\n\nWhen specified, turns after `last_turn_id` are omitted from the fork. The referenced turn cannot be in progress.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "model": {
             "description": "Configuration overrides for the forked thread, if any.",
@@ -17335,9 +17948,9 @@
           },
           "instructionSources": {
             "default": [],
-            "description": "Instruction source files currently loaded for this thread.",
+            "description": "Environment-native paths to instruction source files currently loaded for this thread.",
             "items": {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": "array"
           },
@@ -17585,6 +18198,13 @@
         "title": "ThreadGoalUpdatedNotification",
         "type": "object"
       },
+      "ThreadHistoryMode": {
+        "enum": [
+          "legacy",
+          "paginated"
+        ],
+        "type": "string"
+      },
       "ThreadId": {
         "type": "string"
       },
@@ -17802,7 +18422,7 @@
               "cwd": {
                 "allOf": [
                   {
-                    "$ref": "#/definitions/v2/AbsolutePathBuf"
+                    "$ref": "#/definitions/v2/LegacyAppPathString"
                   }
                 ],
                 "description": "The command's working directory."
@@ -17896,6 +18516,16 @@
           },
           {
             "properties": {
+              "appContext": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/McpToolCallAppContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "arguments": true,
               "durationMs": {
                 "description": "The duration of the MCP tool call in milliseconds.",
@@ -17919,6 +18549,7 @@
                 "type": "string"
               },
               "mcpAppResourceUri": {
+                "description": "Deprecated: use `appContext.resourceUri` instead.",
                 "type": [
                   "string",
                   "null"
@@ -18184,7 +18815,7 @@
                 "type": "string"
               },
               "path": {
-                "$ref": "#/definitions/v2/AbsolutePathBuf"
+                "$ref": "#/definitions/v2/LegacyAppPathString"
               },
               "type": {
                 "enum": [
@@ -19039,9 +19670,9 @@
           },
           "instructionSources": {
             "default": [],
-            "description": "Instruction source files currently loaded for this thread.",
+            "description": "Environment-native paths to instruction source files currently loaded for this thread.",
             "items": {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": "array"
           },
@@ -19093,6 +19724,7 @@
       },
       "ThreadRollbackParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "DEPRECATED: `thread/rollback` will be removed soon.",
         "properties": {
           "numTurns": {
             "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
@@ -19456,9 +20088,9 @@
           },
           "instructionSources": {
             "default": [],
-            "description": "Instruction source files currently loaded for this thread.",
+            "description": "Environment-native paths to instruction source files currently loaded for this thread.",
             "items": {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": "array"
           },
@@ -19849,6 +20481,7 @@
             "description": "Only populated when the Turn's status is failed."
           },
           "id": {
+            "description": "Identifier for this turn. Codex-generated turn IDs are UUIDv7.",
             "type": "string"
           },
           "items": {
@@ -20627,6 +21260,7 @@
         "enum": [
           "disabled",
           "cached",
+          "indexed",
           "live"
         ],
         "type": "string"
@@ -20785,6 +21419,49 @@
           "chat",
           "messages",
           "ollama_native"
+        ],
+        "type": "string"
+      },
+      "WorkspaceMessage": {
+        "properties": {
+          "archivedAt": {
+            "description": "Unix timestamp (in seconds) when the message was archived.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "description": "Unix timestamp (in seconds) when the message was created.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "messageBody": {
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "messageType": {
+            "$ref": "#/definitions/v2/WorkspaceMessageType"
+          }
+        },
+        "required": [
+          "messageBody",
+          "messageId",
+          "messageType"
+        ],
+        "type": "object"
+      },
+      "WorkspaceMessageType": {
+        "enum": [
+          "headline",
+          "announcement",
+          "unknown"
         ],
         "type": "string"
       },

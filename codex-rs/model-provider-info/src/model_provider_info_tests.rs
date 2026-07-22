@@ -6,6 +6,50 @@ use std::num::NonZeroU64;
 use tempfile::tempdir;
 
 #[test]
+fn openai_provider_version_header_uses_codex_compatibility_version() {
+    let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    let version = provider
+        .http_headers
+        .as_ref()
+        .and_then(|headers| headers.get("version"));
+
+    assert_eq!(
+        version.map(String::as_str),
+        Some(codex_product_info::Product::current().codex_compatibility_version())
+    );
+}
+
+#[test]
+fn kimi_and_moonshot_providers_default_to_current_kimi_code_harness() {
+    for (provider_id, name, base_url, model) in [
+        (
+            "kimi-for-coding",
+            "Kimi For Coding",
+            "https://api.kimi.com/coding/v1",
+            "k3",
+        ),
+        (
+            "moonshotai",
+            "Moonshot AI",
+            "https://api.moonshot.ai/v1",
+            "kimi-k3",
+        ),
+    ] {
+        let provider = ModelProviderInfo {
+            name: name.to_string(),
+            base_url: Some(base_url.to_string()),
+            wire_api: WireApi::Chat,
+            ..ModelProviderInfo::default()
+        };
+
+        assert_eq!(
+            default_harness_for_provider_model(provider_id, &provider, Some(model)),
+            Some("kimi-code")
+        );
+    }
+}
+
+#[test]
 fn test_deserialize_ollama_model_provider_toml() {
     let azure_provider_toml = r#"
 name = "Ollama"
@@ -152,6 +196,15 @@ fn test_personal_access_token_uses_chatgpt_codex_base_url() {
 }
 
 #[test]
+fn test_header_auth_uses_chatgpt_codex_base_url() {
+    let api_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        .to_api_provider(Some(AuthMode::Headers))
+        .expect("OpenAI provider should build API provider");
+
+    assert_eq!(api_provider.base_url, CHATGPT_CODEX_BASE_URL);
+}
+
+#[test]
 fn test_supports_remote_compaction_for_azure_name() {
     let provider = ModelProviderInfo {
         name: "Azure".into(),
@@ -201,6 +254,31 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
     };
 
     assert!(!provider.supports_remote_compaction());
+}
+
+#[test]
+fn test_uses_openai_actor_authorization() {
+    let mut provider = ModelProviderInfo {
+        http_headers: Some(maplit::hashmap! {
+            "X-OpenAI-Actor-Authorization".to_string() => "actor-token".to_string(),
+        }),
+        ..ModelProviderInfo::default()
+    };
+    assert!(provider.uses_openai_actor_authorization());
+
+    provider.http_headers = None;
+    assert!(!provider.uses_openai_actor_authorization());
+
+    provider.http_headers = Some(maplit::hashmap! {
+        OPENAI_ACTOR_AUTHORIZATION_HEADER.to_string() => "  ".to_string(),
+    });
+    assert!(!provider.uses_openai_actor_authorization());
+
+    provider.http_headers = Some(maplit::hashmap! {
+        OPENAI_ACTOR_AUTHORIZATION_HEADER.to_string() => "actor-token".to_string(),
+    });
+    provider.requires_openai_auth = true;
+    assert!(!provider.uses_openai_actor_authorization());
 }
 
 #[test]

@@ -16,11 +16,20 @@
     "groq": "https://api.groq.com/openai/v1",
     "anthropic": "https://api.anthropic.com"
   },
+  "env_key_overrides": {
+    "zai": "ZAI_API_KEY",
+    "zai-coding-plan": "ZAI_API_KEY"
+  },
   "live_model_sources": {
     "moonshotai": {
       "url": "https://api.moonshot.ai/v1/models",
       "auth": "bearer",
       "auth_env": ["MOONSHOT_API_KEY", "KIMI_API_KEY"]
+    },
+    "zai": {
+      "url": "https://api.z.ai/api/paas/v4/models",
+      "auth": "bearer",
+      "auth_env": ["ZAI_API_KEY", "ZHIPU_API_KEY"]
     },
     "groq": {
       "url": "https://api.groq.com/openai/v1/models",
@@ -32,6 +41,10 @@
   },
   "provider_model_metadata_overrides": {
     "moonshotai": {
+      "kimi-k3": {
+        "thinking_toggle": true,
+        "priority": -1
+      },
       "kimi-k2.5": {
         "thinking_toggle": true
       },
@@ -45,6 +58,12 @@
       },
       "kimi-k2-0905-preview": {
         "priority": 1000
+      }
+    },
+    "kimi-for-coding": {
+      "k3": {
+        "thinking_toggle": true,
+        "priority": -1
       }
     },
     "moonshotai-cn": {

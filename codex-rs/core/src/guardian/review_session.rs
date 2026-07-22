@@ -15,6 +15,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -27,6 +28,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
+use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
@@ -56,6 +58,7 @@ use super::prompt::GuardianTranscriptCursor;
 use super::prompt::build_guardian_prompt_items_with_parent_turn;
 use super::prompt::guardian_policy_prompt;
 use super::prompt::guardian_policy_prompt_with_config;
+use super::review::guardian_review_session_config;
 
 const GUARDIAN_INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
@@ -92,6 +95,7 @@ pub(crate) struct GuardianReviewSessionParams {
 #[derive(Default)]
 pub(crate) struct GuardianReviewSessionManager {
     state: Arc<Mutex<GuardianReviewSessionState>>,
+    cancellation_token: CancellationToken,
 }
 
 #[derive(Default)]
@@ -289,6 +293,42 @@ impl Drop for EphemeralReviewCleanup {
 }
 
 impl GuardianReviewSessionManager {
+    pub(crate) fn initialize(
+        &self,
+        parent_session: Arc<Session>,
+        parent_turn: Arc<TurnContext>,
+    ) -> BoxFuture<'_, anyhow::Result<()>> {
+        // Boxing breaks the Session::new -> Guardian -> Session::new future recursion.
+        Box::pin(async move {
+            let spawn_config = guardian_review_session_config(&parent_session, &parent_turn)
+                .await?
+                .spawn_config;
+            let reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
+                &spawn_config,
+                parent_session.user_instructions().await,
+            );
+            let spawn_cancel_token = self.cancellation_token.child_token();
+            let spawn_cancel_guard = spawn_cancel_token.clone().drop_guard();
+            let review_session = spawn_guardian_review_session(
+                &parent_session,
+                &parent_turn,
+                spawn_config,
+                reuse_key,
+                spawn_cancel_token.clone(),
+                /*fork_snapshot*/ None,
+            )
+            .await?;
+            // A first review or shutdown may win while eager initialization is in flight;
+            // install only if neither has happened.
+            let mut state = self.state.lock().await;
+            if !spawn_cancel_token.is_cancelled() && state.trunk.is_none() {
+                state.trunk = Some(Arc::new(review_session));
+                drop(spawn_cancel_guard.disarm());
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) async fn trunk_rollout_path(&self) -> Option<PathBuf> {
         let trunk = self.state.lock().await.trunk.clone()?;
         trunk.codex.session.ensure_rollout_materialized().await;
@@ -302,6 +342,7 @@ impl GuardianReviewSessionManager {
     }
 
     pub(crate) async fn shutdown(&self) {
+        self.cancellation_token.cancel();
         let (review_session, ephemeral_reviews) = {
             let mut state = self.state.lock().await;
             (
@@ -348,13 +389,14 @@ impl GuardianReviewSessionManager {
                 }
 
                 if state.trunk.is_none() {
-                    let spawn_cancel_token = CancellationToken::new();
+                    let spawn_cancel_token = self.cancellation_token.child_token();
                     let review_session = match run_before_review_deadline_with_cancel(
                         deadline,
                         params.external_cancel.as_ref(),
                         &spawn_cancel_token,
                         Box::pin(spawn_guardian_review_session(
-                            &params,
+                            &params.parent_session,
+                            &params.parent_turn,
                             params.spawn_config.clone(),
                             next_reuse_key.clone(),
                             spawn_cancel_token.clone(),
@@ -556,7 +598,7 @@ impl GuardianReviewSessionManager {
         deadline: tokio::time::Instant,
         fork_snapshot: Option<GuardianReviewForkSnapshot>,
     ) -> (GuardianReviewSessionOutcome, GuardianReviewAnalyticsResult) {
-        let spawn_cancel_token = CancellationToken::new();
+        let spawn_cancel_token = self.cancellation_token.child_token();
         let mut fork_config = params.spawn_config.clone();
         fork_config.ephemeral = true;
         let review_session = match run_before_review_deadline_with_cancel(
@@ -564,7 +606,8 @@ impl GuardianReviewSessionManager {
             params.external_cancel.as_ref(),
             &spawn_cancel_token,
             Box::pin(spawn_guardian_review_session(
-                &params,
+                &params.parent_session,
+                &params.parent_turn,
                 fork_config,
                 reuse_key,
                 spawn_cancel_token.clone(),
@@ -605,7 +648,8 @@ impl GuardianReviewSessionManager {
 }
 
 async fn spawn_guardian_review_session(
-    params: &GuardianReviewSessionParams,
+    parent_session: &Arc<Session>,
+    parent_turn: &Arc<TurnContext>,
     spawn_config: Config,
     reuse_key: GuardianReviewSessionReuseKey,
     cancel_token: CancellationToken,
@@ -621,10 +665,10 @@ async fn spawn_guardian_review_session(
     };
     let codex = Box::pin(run_codex_thread_interactive(
         spawn_config,
-        params.parent_session.services.auth_manager.clone(),
-        params.parent_session.services.models_manager.clone(),
-        Arc::clone(&params.parent_session),
-        Arc::clone(&params.parent_turn),
+        parent_session.services.auth_manager.clone(),
+        parent_session.services.models_manager.clone(),
+        Arc::clone(parent_session),
+        Arc::clone(parent_turn),
         cancel_token.clone(),
         SubAgentSource::Other(GUARDIAN_REVIEWER_NAME.to_string()),
         initial_history,
@@ -952,6 +996,7 @@ pub(crate) fn build_guardian_review_session_config(
     live_network_config: Option<codex_network_proxy::NetworkProxyConfig>,
     active_model: &str,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    model_messages: Option<&ModelMessages>,
 ) -> anyhow::Result<Config> {
     let mut guardian_config = parent_config.clone();
     guardian_config.model = Some(active_model.to_string());
@@ -961,22 +1006,26 @@ pub(crate) fn build_guardian_review_session_config(
     guardian_config.include_skill_instructions = false;
     guardian_config.memories.use_memories = false;
     guardian_config.memories.dedicated_tools = false;
-    guardian_config.base_instructions = Some({
-        let use_toon = parent_config
-            .guardian_toon_capable_models
-            .as_deref()
-            .is_some_and(|list| {
-                list.split(',')
-                    .map(str::trim)
-                    .filter(|substr| !substr.is_empty())
-                    .any(|substr| active_model.contains(substr))
-            });
+    let use_toon = parent_config
+        .guardian_toon_capable_models
+        .as_deref()
+        .is_some_and(|list| {
+            list.split(',')
+                .map(str::trim)
+                .filter(|substr| !substr.is_empty())
+                .any(|substr| active_model.contains(substr))
+        });
+    let catalog_policy = model_messages
+        .and_then(|messages| messages.auto_review.as_ref())
+        .and_then(|messages| messages.policy.as_deref());
+    guardian_config.base_instructions = Some(
         parent_config
             .guardian_policy_config
             .as_deref()
+            .or(catalog_policy)
             .map(|config| guardian_policy_prompt_with_config(config, use_toon))
-            .unwrap_or_else(|| guardian_policy_prompt(use_toon))
-    });
+            .unwrap_or_else(|| guardian_policy_prompt(use_toon)),
+    );
     guardian_config.notify = None;
     guardian_config.developer_instructions = None;
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
@@ -1090,6 +1139,7 @@ async fn interrupt_and_drain_turn(codex: &Codex, expected_turn_id: &str) -> anyh
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::openai_models::AutoReviewMessages;
     use codex_protocol::protocol::AgentStatus;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::Submission;
@@ -1177,6 +1227,7 @@ mod tests {
             /*live_network_config*/ None,
             model.as_str(),
             reasoning_effort.clone(),
+            /*model_messages*/ None,
         )
         .expect("guardian config");
 
@@ -1215,6 +1266,7 @@ mod tests {
             /*live_network_config*/ None,
             "active-model",
             /*reasoning_effort*/ None,
+            /*model_messages*/ None,
         )
         .expect("cached guardian config");
         let cached_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -1230,6 +1282,7 @@ mod tests {
             /*live_network_config*/ None,
             "active-model",
             /*reasoning_effort*/ None,
+            /*model_messages*/ None,
         )
         .expect("next guardian config");
         let next_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -1295,6 +1348,7 @@ mod tests {
             /*live_network_config*/ None,
             "active-model",
             /*reasoning_effort*/ None,
+            /*model_messages*/ None,
         )
         .expect("cached guardian config");
         let cached_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -1310,6 +1364,7 @@ mod tests {
             /*live_network_config*/ None,
             "active-model",
             /*reasoning_effort*/ None,
+            /*model_messages*/ None,
         )
         .expect("next guardian config");
         let next_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
@@ -1333,6 +1388,7 @@ mod tests {
             /*live_network_config*/ None,
             "active-model",
             /*reasoning_effort*/ None,
+            /*model_messages*/ None,
         )
         .expect("guardian config");
 
@@ -1349,10 +1405,71 @@ mod tests {
             /*live_network_config*/ None,
             "active-model",
             /*reasoning_effort*/ None,
+            /*model_messages*/ None,
         )
         .expect("guardian config");
 
         assert!(!guardian_config.include_skill_instructions);
+    }
+
+    #[tokio::test]
+    async fn guardian_review_session_config_prefers_managed_policy_over_catalog_policy() {
+        let mut parent_config = crate::config::test_config().await;
+        let managed_policy = "Use the managed Guardian policy.";
+        parent_config.guardian_policy_config = Some(managed_policy.to_string());
+        let model_messages = ModelMessages {
+            instructions_template: None,
+            instructions_variables: None,
+            approvals: None,
+            auto_review: Some(AutoReviewMessages {
+                policy: Some("Use the catalog Guardian policy.".to_string()),
+            }),
+        };
+
+        let guardian_config = build_guardian_review_session_config(
+            &parent_config,
+            /*live_network_config*/ None,
+            "active-model",
+            /*reasoning_effort*/ None,
+            Some(&model_messages),
+        )
+        .expect("guardian config");
+
+        assert_eq!(
+            guardian_config.base_instructions,
+            Some(guardian_policy_prompt_with_config(managed_policy, false))
+        );
+    }
+
+    #[tokio::test]
+    async fn guardian_review_session_config_preserves_explicit_empty_catalog_policy() {
+        let parent_config = crate::config::test_config().await;
+        let model_messages = ModelMessages {
+            instructions_template: None,
+            instructions_variables: None,
+            approvals: None,
+            auto_review: Some(AutoReviewMessages {
+                policy: Some(String::new()),
+            }),
+        };
+
+        let guardian_config = build_guardian_review_session_config(
+            &parent_config,
+            /*live_network_config*/ None,
+            "active-model",
+            /*reasoning_effort*/ None,
+            Some(&model_messages),
+        )
+        .expect("guardian config");
+
+        assert_eq!(
+            guardian_config.base_instructions,
+            Some(guardian_policy_prompt_with_config("", false))
+        );
+        assert_ne!(
+            guardian_config.base_instructions,
+            Some(guardian_policy_prompt(false))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1555,6 +1672,7 @@ mod tests {
                 trunk: Some(Arc::new(review_session)),
                 ephemeral_reviews: Vec::new(),
             })),
+            ..Default::default()
         };
         drop(tx_event);
 

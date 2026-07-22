@@ -24,6 +24,7 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
+use codex_app_server_protocol::ConfigRequirementsReadResponse;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::ExternalAgentConfigDetectParams;
 use codex_app_server_protocol::ExternalAgentConfigDetectResponse;
@@ -39,6 +40,7 @@ use codex_app_server_protocol::MemoryResetResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
+use codex_app_server_protocol::NewThreadModelDefaults;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewDelivery;
@@ -120,6 +122,7 @@ use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use color_eyre::eyre::ContextCompat;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -177,6 +180,7 @@ pub(crate) struct AppServerSession {
     thread_settings_update_supported: bool,
     default_model: Option<String>,
     available_models: Vec<ModelPreset>,
+    managed_new_thread_defaults: Option<NewThreadModelDefaults>,
     external_agent_config_import_completion_pending: AtomicBool,
 }
 
@@ -184,6 +188,15 @@ pub(crate) struct AppServerSession {
 pub(crate) enum ThreadParamsMode {
     Embedded,
     Remote,
+}
+
+/// Determines where model settings come from when resuming a thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResumeModelSettings {
+    /// Sends the current config's model, provider, and reasoning effort as explicit overrides.
+    OverrideFromCurrentConfig,
+    /// Omits those overrides so app-server restores the settings saved with the thread.
+    RestoreFromThread,
 }
 
 impl ThreadParamsMode {
@@ -221,6 +234,7 @@ impl AppServerSession {
             thread_settings_update_supported: true,
             default_model: None,
             available_models: Vec::new(),
+            managed_new_thread_defaults: None,
             external_agent_config_import_completion_pending: AtomicBool::new(false),
         }
     }
@@ -259,6 +273,21 @@ impl AppServerSession {
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;
+        let requirements_request_id = self.next_request_id();
+        let requirements: ConfigRequirementsReadResponse = self
+            .client
+            .request_typed(ClientRequest::ConfigRequirementsRead {
+                request_id: requirements_request_id,
+                params: None,
+            })
+            .await
+            .map_err(|err| {
+                bootstrap_request_error("configRequirements/read failed during TUI bootstrap", err)
+            })?;
+        self.managed_new_thread_defaults = requirements
+            .requirements
+            .and_then(|requirements| requirements.models)
+            .and_then(|models| models.new_thread);
         let model_request_id = self.next_request_id();
         let models: ModelListResponse = self
             .client
@@ -311,16 +340,15 @@ impl AppServerSession {
                 false,
             ),
             Some(Account::Chatgpt { email, plan_type }) => {
-                let feedback_audience = if email.ends_with("@openai.com") {
-                    FeedbackAudience::OpenAiEmployee
-                } else {
-                    FeedbackAudience::External
-                };
+                let feedback_audience = feedback_audience_for_product(
+                    codex_product_info::Product::current(),
+                    email.as_deref(),
+                );
                 (
-                    Some(email.clone()),
+                    email.clone(),
                     Some(TelemetryAuthMode::Chatgpt),
                     Some(StatusAccountDisplay::ChatGpt {
-                        email: Some(email),
+                        email,
                         plan: Some(plan_type_display_name(plan_type)),
                     }),
                     Some(plan_type),
@@ -345,6 +373,10 @@ impl AppServerSession {
             has_chatgpt_account,
             available_models,
         })
+    }
+
+    pub(crate) fn managed_new_thread_defaults(&self) -> Option<&NewThreadModelDefaults> {
+        self.managed_new_thread_defaults.as_ref()
     }
 
     /// Fetches the current account info without refreshing the auth token.
@@ -458,9 +490,14 @@ impl AppServerSession {
         &mut self,
         config: Config,
         thread_id: ThreadId,
+        model_settings: ResumeModelSettings,
     ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
-        let session_config = self.session_config_with_effective_service_tier(&config);
+        let session_config = if model_settings == ResumeModelSettings::RestoreFromThread {
+            config.clone()
+        } else {
+            self.session_config_with_effective_service_tier(&config)
+        };
         let response: ThreadResumeResponse = self
             .client
             .request_typed(ClientRequest::ThreadResume {
@@ -470,6 +507,7 @@ impl AppServerSession {
                     thread_id,
                     self.thread_params_mode(),
                     self.remote_cwd_override.as_deref(),
+                    model_settings,
                 ),
             })
             .await
@@ -786,6 +824,7 @@ impl AppServerSession {
                     personality,
                     output_schema,
                     collaboration_mode,
+                    multi_agent_mode: None,
                 },
             })
             .await
@@ -1146,6 +1185,19 @@ impl AppServerSession {
     }
 }
 
+fn feedback_audience_for_product(
+    product: codex_product_info::Product,
+    email: Option<&str>,
+) -> FeedbackAudience {
+    if product == codex_product_info::Product::Codex
+        && email.is_some_and(|email| email.ends_with("@openai.com"))
+    {
+        FeedbackAudience::OpenAiEmployee
+    } else {
+        FeedbackAudience::External
+    }
+}
+
 pub(crate) async fn start_thread_with_request_handle(
     request_handle: AppServerRequestHandle,
     config: Config,
@@ -1180,7 +1232,7 @@ pub(crate) fn status_account_display_from_auth_mode(
             email: None,
             plan: plan_type.map(plan_type_display_name),
         }),
-        Some(AuthMode::BedrockApiKey) => None,
+        Some(AuthMode::Headers) | Some(AuthMode::BedrockApiKey) => None,
         None => None,
     }
 }
@@ -1410,6 +1462,7 @@ fn thread_resume_params_from_config(
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<&std::path::Path>,
+    model_settings: ResumeModelSettings,
 ) -> ThreadResumeParams {
     let permissions = permissions_selection_from_config(&config, thread_params_mode);
     let sandbox = permissions
@@ -1421,10 +1474,26 @@ fn thread_resume_params_from_config(
             )
         })
         .flatten();
+    let mut config_overrides = config_request_overrides_from_config(&config);
+    if model_settings == ResumeModelSettings::RestoreFromThread
+        && let Some(overrides) = config_overrides.as_mut()
+    {
+        overrides.remove("model_reasoning_effort");
+        if overrides.is_empty() {
+            config_overrides = None;
+        }
+    }
+    let (model, model_provider) = match model_settings {
+        ResumeModelSettings::OverrideFromCurrentConfig => (
+            config.model.clone(),
+            thread_params_mode.model_provider_from_config(&config),
+        ),
+        ResumeModelSettings::RestoreFromThread => (None, None),
+    };
     ThreadResumeParams {
         thread_id: thread_id.to_string(),
-        model: config.model.clone(),
-        model_provider: thread_params_mode.model_provider_from_config(&config),
+        model,
+        model_provider,
         service_tier: service_tier_override_from_config(&config),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
@@ -1432,7 +1501,7 @@ fn thread_resume_params_from_config(
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox,
         permissions,
-        config: config_request_overrides_from_config(&config),
+        config: config_overrides,
         developer_instructions: with_terminal_visualization_instructions(
             &config, /*control_instructions*/ None,
         ),
@@ -1562,7 +1631,7 @@ async fn thread_session_state_from_thread_start_response(
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
-        response.instruction_sources.clone(),
+        response.instruction_source_path_uris(),
         response.reasoning_effort.clone(),
         config,
     )
@@ -1603,7 +1672,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
-        response.instruction_sources.clone(),
+        response.instruction_source_path_uris(),
         response.reasoning_effort.clone(),
         config,
     )
@@ -1635,7 +1704,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
-        response.instruction_sources.clone(),
+        response.instruction_source_path_uris(),
         response.reasoning_effort.clone(),
         config,
     )
@@ -1674,7 +1743,7 @@ async fn thread_session_state_from_thread_response(
     active_permission_profile: Option<ActivePermissionProfile>,
     cwd: AbsolutePathBuf,
     runtime_workspace_roots: Vec<AbsolutePathBuf>,
-    instruction_source_paths: Vec<AbsolutePathBuf>,
+    instruction_source_paths: Vec<PathUri>,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     config: &Config,
 ) -> Result<ThreadSessionState, String> {
@@ -1740,6 +1809,7 @@ mod tests {
     use super::*;
     use crate::legacy_core::config::ConfigBuilder;
     use crate::legacy_core::config::ConfigOverrides;
+    use app_test_support::create_fake_rollout;
     use codex_app_server_protocol::ThreadStatus;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnStatus;
@@ -1752,6 +1822,7 @@ mod tests {
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
     use codex_protocol::models::ManagedFileSystemPermissions;
+    use codex_protocol::openai_models::ModelServiceTier;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
@@ -1760,6 +1831,7 @@ mod tests {
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
+    use codex_utils_path_uri::LegacyAppPathString;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -1995,6 +2067,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             /*remote_cwd_override*/ None,
+            ResumeModelSettings::OverrideFromCurrentConfig,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -2112,6 +2185,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             Some(remote_cwd.as_path()),
+            ResumeModelSettings::OverrideFromCurrentConfig,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -2163,6 +2237,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ResumeModelSettings::OverrideFromCurrentConfig,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -2187,6 +2262,88 @@ mod tests {
         assert_eq!(start.config, Some(expected_config.clone()));
         assert_eq!(resume.config, Some(expected_config.clone()));
         assert_eq!(fork.config, Some(expected_config));
+    }
+
+    #[tokio::test]
+    async fn thread_resume_params_can_restore_persisted_model_settings() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&temp_dir).await;
+        config.model = Some("configured-model".to_string());
+        config.model_provider_id = "configured-provider".to_string();
+        config.model_reasoning_effort = Some(ReasoningEffort::Ultra);
+        config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+
+        let params = thread_resume_params_from_config(
+            config,
+            ThreadId::new(),
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            ResumeModelSettings::RestoreFromThread,
+        );
+
+        assert_eq!(params.model, None);
+        assert_eq!(params.model_provider, None);
+        assert_eq!(
+            params.config,
+            Some(HashMap::from([
+                (
+                    "model_reasoning_summary".to_string(),
+                    serde_json::Value::String("detailed".to_string()),
+                ),
+                (
+                    "personality".to_string(),
+                    serde_json::Value::String("pragmatic".to_string()),
+                ),
+                (
+                    "web_search".to_string(),
+                    serde_json::Value::String("cached".to_string()),
+                ),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_resume_does_not_forward_implicit_service_tier() -> Result<()> {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&codex_home).await;
+        config.model = Some("gpt-5.4".to_string());
+        config.service_tier = None;
+        config
+            .features
+            .enable(Feature::FastMode)
+            .expect("enable fast mode");
+        let thread_id = ThreadId::from_string(
+            &create_fake_rollout(
+                codex_home.path(),
+                "2025-01-05T12-00-00",
+                "2025-01-05T12:00:00Z",
+                "Saved user message",
+                Some(config.model_provider_id.as_str()),
+                /*git_info*/ None,
+            )
+            .expect("create source rollout"),
+        )?;
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+        let mut preset = crate::test_support::TEST_MODEL_PRESETS
+            .iter()
+            .find(|preset| preset.model == "gpt-5.4")
+            .expect("gpt-5.4 test preset")
+            .clone();
+        preset.service_tiers = vec![ModelServiceTier {
+            id: ServiceTier::Fast.request_value().to_string(),
+            name: "fast".to_string(),
+            description: "Fast tier".to_string(),
+        }];
+        preset.default_service_tier = Some(ServiceTier::Fast.request_value().to_string());
+        app_server.available_models = vec![preset];
+
+        let resumed = app_server
+            .resume_thread(config, thread_id, ResumeModelSettings::RestoreFromThread)
+            .await?;
+
+        assert_eq!(resumed.session.service_tier, None);
+        app_server.shutdown().await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -2250,6 +2407,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ResumeModelSettings::OverrideFromCurrentConfig,
         );
         let control_fork = thread_fork_params_from_config(
             config.clone(),
@@ -2279,6 +2437,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ResumeModelSettings::OverrideFromCurrentConfig,
         );
         let treatment_fork = thread_fork_params_from_config(
             config,
@@ -2315,11 +2474,13 @@ mod tests {
         let response = ThreadResumeResponse {
             thread: codex_app_server_protocol::Thread {
                 id: thread_id.to_string(),
+                extra: None,
                 session_id: ThreadId::new().to_string(),
                 forked_from_id: Some(forked_from_id.to_string()),
                 parent_thread_id: None,
                 preview: "hello".to_string(),
                 ephemeral: false,
+                history_mode: Default::default(),
                 model_provider: "openai".to_string(),
                 created_at: 1,
                 updated_at: 2,
@@ -2368,7 +2529,9 @@ mod tests {
                 test_path_buf("/tmp/project").abs(),
                 test_path_buf("/tmp/project/extra").abs(),
             ],
-            instruction_sources: vec![test_path_buf("/tmp/project/AGENTS.md").abs()],
+            instruction_sources: vec![LegacyAppPathString::from_abs_path(
+                &test_path_buf("/tmp/project/AGENTS.md").abs(),
+            )],
             approval_policy: codex_app_server_protocol::AskForApproval::Never,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
             sandbox: read_only_profile
@@ -2377,6 +2540,7 @@ mod tests {
                 .into(),
             active_permission_profile: None,
             reasoning_effort: None,
+            multi_agent_mode: Default::default(),
             initial_turns_page: None,
         };
 
@@ -2394,7 +2558,7 @@ mod tests {
         );
         assert_eq!(
             started.session.instruction_source_paths,
-            response.instruction_sources
+            response.instruction_source_path_uris()
         );
         assert_eq!(started.session.permission_profile, read_only_profile);
         assert_eq!(started.turns.len(), 1);
@@ -2576,5 +2740,23 @@ mod tests {
                 plan: Some(ref plan),
             }) if plan == "Business"
         ));
+    }
+
+    #[test]
+    fn open_interpreter_feedback_never_uses_openai_internal_routing() {
+        assert_eq!(
+            feedback_audience_for_product(
+                codex_product_info::Product::OpenInterpreter,
+                Some("person@openai.com")
+            ),
+            FeedbackAudience::External
+        );
+        assert_eq!(
+            feedback_audience_for_product(
+                codex_product_info::Product::Codex,
+                Some("person@openai.com")
+            ),
+            FeedbackAudience::OpenAiEmployee
+        );
     }
 }

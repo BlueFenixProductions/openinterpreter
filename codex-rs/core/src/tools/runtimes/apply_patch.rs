@@ -4,11 +4,10 @@
 //! selected turn environment filesystem for both local and remote turns, with
 //! sandboxing enforced by the explicit filesystem sandbox context.
 use crate::exec::is_likely_sandbox_denied;
-use crate::guardian::GuardianApprovalRequest;
-use crate::guardian::review_approval_request;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::sandboxing::Approvable;
+use crate::tools::sandboxing::ApprovalAction;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
 use crate::tools::sandboxing::PermissionRequestPayload;
@@ -32,7 +31,6 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
 use codex_sandboxing::policy_transforms::effective_permission_profile;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use std::path::PathBuf;
@@ -41,14 +39,14 @@ use std::time::Instant;
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize)]
 pub(crate) struct ApplyPatchApprovalKey {
     environment_id: String,
-    path: AbsolutePathBuf,
+    path: PathUri,
 }
 
 #[derive(Debug)]
 pub struct ApplyPatchRequest {
     pub turn_environment: TurnEnvironment,
     pub action: ApplyPatchAction,
-    pub file_paths: Vec<AbsolutePathBuf>,
+    pub file_paths: Vec<PathUri>,
     pub changes: std::collections::HashMap<PathBuf, FileChange>,
     pub exec_approval_requirement: ExecApprovalRequirement,
     pub additional_permissions: Option<AdditionalPermissionProfile>,
@@ -78,13 +76,18 @@ impl ApplyPatchRuntime {
     fn build_guardian_review_request(
         req: &ApplyPatchRequest,
         call_id: &str,
-    ) -> std::io::Result<GuardianApprovalRequest> {
+    ) -> std::io::Result<ApprovalAction> {
         // TODO(anp): Remove this conversion once the guardian API supports PathUri.
         let cwd = req.action.cwd.to_abs_path()?;
-        Ok(GuardianApprovalRequest::ApplyPatch {
+        let files = req
+            .file_paths
+            .iter()
+            .map(PathUri::to_abs_path)
+            .collect::<std::io::Result<Vec<_>>>()?;
+        Ok(ApprovalAction::ApplyPatch {
             id: call_id.to_string(),
             cwd,
-            files: req.file_paths.clone(),
+            files,
             patch: req.action.patch.clone(),
         })
     }
@@ -148,27 +151,12 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         let retry_reason = ctx.retry_reason.clone();
         let approval_keys = self.approval_keys(req);
         let changes = req.changes.clone();
-        let guardian_review_id = ctx.guardian_review_id.clone();
         Box::pin(async move {
-            if let Some(review_id) = guardian_review_id {
-                let action = match ApplyPatchRuntime::build_guardian_review_request(
-                    req,
-                    ctx.call_id,
-                ) {
-                    Ok(action) => action,
-                    Err(err) => {
-                        tracing::error!(cwd = %req.action.cwd, %err, "guardian apply_patch cwd is not host-native");
-                        return ReviewDecision::Abort;
-                    }
-                };
-                return review_approval_request(session, turn, review_id, action, retry_reason)
-                    .await;
-            }
             if req.permissions_preapproved && retry_reason.is_none() {
                 return ReviewDecision::Approved;
             }
             if let Some(reason) = retry_reason {
-                let rx_approve = session
+                return session
                     .request_patch_approval(
                         turn,
                         call_id,
@@ -177,7 +165,6 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
                         /*grant_root*/ None,
                     )
                     .await;
-                return rx_approve.await.unwrap_or_default();
             }
 
             with_cached_approval(
@@ -185,23 +172,29 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
                 "apply_patch",
                 approval_keys,
                 || async move {
-                    let rx_approve = session
+                    session
                         .request_patch_approval(
                             turn, call_id, changes, /*reason*/ None, /*grant_root*/ None,
                         )
-                        .await;
-                    rx_approve.await.unwrap_or_default()
+                        .await
                 },
             )
             .await
         })
     }
 
+    fn approval_action(
+        &self,
+        req: &ApplyPatchRequest,
+        ctx: &ApprovalCtx<'_>,
+    ) -> std::io::Result<ApprovalAction> {
+        ApplyPatchRuntime::build_guardian_review_request(req, ctx.call_id)
+    }
+
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
         match policy {
             AskForApproval::Never => false,
             AskForApproval::Granular(granular_config) => granular_config.allows_sandbox_approval(),
-            AskForApproval::OnFailure => true,
             AskForApproval::OnRequest => true,
             AskForApproval::UnlessTrusted => true,
         }
@@ -245,15 +238,9 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
         let sandbox = Self::file_system_sandbox_context_for_attempt(req, attempt);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        // TODO(anp): Teach apply_patch to operate on PathUri directly.
-        let cwd = req
-            .action
-            .cwd
-            .to_abs_path()
-            .map_err(|err| ToolError::Rejected(err.to_string()))?;
         let result = codex_apply_patch::apply_patch(
             &req.action.patch,
-            &cwd,
+            &req.action.cwd,
             &mut stdout,
             &mut stderr,
             fs.as_ref(),

@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import hashlib
 import json
 import os
@@ -207,6 +209,10 @@ class InstallShLatestResolutionTests(unittest.TestCase):
                 package_root / "bin" / "codex",
                 "#!/bin/sh\nprintf 'codex 0.2.0\\n'\n",
             )
+            write_executable(
+                package_root / "bin" / "codex-code-mode-host",
+                "#!/bin/sh\nexit 0\n",
+            )
             write_executable(package_root / "codex-path" / "rg", "#!/bin/sh\nexit 0\n")
             if "linux" in target:
                 write_executable(
@@ -355,6 +361,11 @@ class InstallShLatestResolutionTests(unittest.TestCase):
                 (install_dir / "i").resolve(),
                 (current / "bin" / "interpreter").resolve(),
             )
+            if platform.system() == "Darwin":
+                self.assertEqual(
+                    (install_dir / "codex-code-mode-host").resolve(),
+                    (current / "bin" / "codex-code-mode-host").resolve(),
+                )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::exec::ExecCapturePolicy;
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
 use crate::tools::context::ExecCommandToolOutput;
@@ -31,6 +33,8 @@ use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
+use codex_shell_command::shell_detect::detect_shell_type;
+use codex_tools::Harness;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_output_truncation::approx_token_count;
@@ -108,6 +112,7 @@ impl ExecCommandHandler {
         let ToolInvocation {
             session,
             turn,
+            step_context,
             tracker,
             call_id,
             payload,
@@ -126,8 +131,10 @@ impl ExecCommandHandler {
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
         let context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
-        let Some(turn_environment) =
-            resolve_tool_environment(turn.as_ref(), environment_args.environment_id.as_deref())?
+        let Some(turn_environment) = resolve_tool_environment(
+            &step_context.environments,
+            environment_args.environment_id.as_deref(),
+        )?
         else {
             return Err(FunctionCallError::RespondToModel(
                 "unified exec is unavailable in this session".to_string(),
@@ -172,7 +179,7 @@ impl ExecCommandHandler {
                 )));
             }
         };
-        let args: ExecCommandArgs = match native_cwd.as_ref() {
+        let mut args: ExecCommandArgs = match native_cwd.as_ref() {
             Some(native_cwd) => {
                 // The base path only resolves paths nested in the permissions config types.
                 parse_arguments_with_base_path(&arguments, native_cwd)?
@@ -195,7 +202,6 @@ impl ExecCommandHandler {
             )
             .await;
         }
-        let process_id = manager.allocate_process_id().await;
         let shell_mode =
             shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
         // Remote environments may use a different OS and must build commands with their native
@@ -205,6 +211,26 @@ impl ExecCommandHandler {
             .clone()
             .map(Arc::new)
             .unwrap_or_else(|| session.user_shell());
+        // TODO(anp): Resolve requested shells in remote environments instead of restricting
+        // commands to the reported default shell.
+        if environment.is_remote()
+            && let Some(requested_shell) = args.shell.take()
+        {
+            let Some(remote_shell) = turn_environment.shell.as_ref() else {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "environment `{}` does not report a shell",
+                    turn_environment.environment_id
+                )));
+            };
+            if detect_shell_type(Path::new(&requested_shell)) != Some(remote_shell.shell_type) {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "environment `{}` only supports `{}`",
+                    turn_environment.environment_id,
+                    remote_shell.name()
+                )));
+            }
+        }
+        let process_id = manager.allocate_process_id().await;
         let resolved_command = get_command(
             &args,
             shell,
@@ -229,6 +255,14 @@ impl ExecCommandHandler {
 
         let exec_permission_approvals_enabled =
             session.features().enabled(Feature::ExecPermissionApprovals);
+        let capture_policy = if matches!(
+            Harness::from_config_name(turn.config.harness.as_deref()),
+            Harness::ZCode
+        ) {
+            ExecCapturePolicy::FullBuffer
+        } else {
+            ExecCapturePolicy::ShellTool
+        };
         let requested_additional_permissions = additional_permissions.clone();
         // TODO(anp): Make permission matching operate on PathUri for remote environments.
         let permission_cwd = native_cwd.as_ref().unwrap_or(&turn.config.cwd);
@@ -287,20 +321,18 @@ impl ExecCommandHandler {
             }
         };
 
-        // TODO(anp) intercept apply_patch properly when cwd is a foreign path
-        if let Some(native_cwd) = native_cwd.as_ref()
-            && let Some(output) = intercept_apply_patch(
-                &command,
-                native_cwd,
-                fs.as_ref(),
-                turn_environment.clone(),
-                context.session.clone(),
-                context.turn.clone(),
-                Some(&tracker),
-                &context.call_id,
-                "exec_command",
-            )
-            .await?
+        if let Some(output) = intercept_apply_patch(
+            &command,
+            &cwd,
+            fs.as_ref(),
+            turn_environment.clone(),
+            context.session.clone(),
+            context.turn.clone(),
+            Some(&tracker),
+            &context.call_id,
+            "exec_command",
+        )
+        .await?
         {
             manager.release_process_id(process_id).await;
             return Ok(boxed_tool_output(ExecCommandToolOutput {
@@ -339,6 +371,7 @@ impl ExecCommandHandler {
                         .permissions_preapproved,
                     justification,
                     prefix_rule,
+                    capture_policy,
                 },
                 &context,
             )

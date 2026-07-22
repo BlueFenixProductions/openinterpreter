@@ -124,11 +124,12 @@ impl McpHandler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
-            turn,
+            step_context,
             call_id,
             payload,
             ..
         } = invocation;
+        let turn = Arc::clone(&step_context.turn);
 
         let payload = match payload {
             ToolPayload::Function { arguments } => arguments,
@@ -140,9 +141,10 @@ impl McpHandler {
         };
 
         let started = Instant::now();
+        // TODO(sayan): Use StepContext for MCP file arguments when MCP follows dynamic environments.
         let result = handle_mcp_tool_call(
             Arc::clone(&session),
-            &turn,
+            &step_context,
             call_id.clone(),
             self.tool_info.server_name.clone(),
             self.tool_info.tool.name.to_string(),
@@ -318,6 +320,7 @@ mod search_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::step_context::StepContext;
     use crate::session::tests::make_session_and_context;
     use crate::tools::context::ToolCallSource;
     use crate::tools::hook_names::HookToolName;
@@ -341,12 +344,14 @@ mod tests {
             .to_string(),
         };
         let (session, turn) = make_session_and_context().await;
+        let turn = Arc::new(turn);
         let handler = McpHandler::new(tool_info("memory", "memory", "create_entities"))
             .expect("MCP tool spec should build");
         assert_eq!(
             handler.pre_tool_use_payload(&ToolInvocation {
                 session: session.into(),
-                turn: turn.into(),
+                step_context: StepContext::for_test(Arc::clone(&turn)),
+                turn,
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-mcp-pre".to_string(),
@@ -372,13 +377,15 @@ mod tests {
             arguments: json!({ "message": "hello" }).to_string(),
         };
         let (session, turn) = make_session_and_context().await;
+        let turn = Arc::new(turn);
         let handler = McpHandler::new(tool_info("foo", "mcp__foo", "exec_command"))
             .expect("MCP tool spec should build");
 
         assert_eq!(
             handler.pre_tool_use_payload(&ToolInvocation {
                 session: session.into(),
-                turn: turn.into(),
+                step_context: StepContext::for_test(Arc::clone(&turn)),
+                turn,
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-mcp-pre-builtin-like".to_string(),
@@ -399,6 +406,7 @@ mod tests {
             arguments: json!({ "message": "hello" }).to_string(),
         };
         let (session, turn) = make_session_and_context().await;
+        let turn = Arc::new(turn);
         let handler = McpHandler::new(tool_info("foo", "mcp__foo", "exec_command"))
             .expect("MCP tool spec should build");
 
@@ -406,7 +414,8 @@ mod tests {
             .with_updated_hook_input(
                 ToolInvocation {
                     session: session.into(),
-                    turn: turn.into(),
+                    step_context: StepContext::for_test(Arc::clone(&turn)),
+                    turn,
                     cancellation_token: tokio_util::sync::CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-mcp-rewrite-builtin-like".to_string(),
@@ -450,11 +459,13 @@ mod tests {
             encode_structured_content_as_toon: false,
         };
         let (session, turn) = make_session_and_context().await;
+        let turn = Arc::new(turn);
         let handler = McpHandler::new(tool_info("filesystem", "filesystem", "read_file"))
             .expect("MCP tool spec should build");
         let invocation = ToolInvocation {
             session: session.into(),
-            turn: turn.into(),
+            step_context: StepContext::for_test(Arc::clone(&turn)),
+            turn,
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-mcp-post".to_string(),

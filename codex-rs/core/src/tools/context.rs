@@ -1,6 +1,7 @@
 use crate::context_manager::truncate_function_output_payload;
 use crate::original_image_detail::sanitize_original_image_detail;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::TELEMETRY_PREVIEW_MAX_BYTES;
 use crate::tools::TELEMETRY_PREVIEW_MAX_LINES;
@@ -53,7 +54,9 @@ pub enum ToolCallSource {
 #[derive(Clone)]
 pub struct ToolInvocation {
     pub session: Arc<Session>,
+    // TODO(sayan): Remove this compatibility field once handlers use `step_context.turn`.
     pub turn: Arc<TurnContext>,
+    pub(crate) step_context: Arc<StepContext>,
     pub cancellation_token: CancellationToken,
     pub tracker: SharedTurnDiffTracker,
     pub call_id: String,
@@ -386,18 +389,24 @@ impl ToolOutput for ExecCommandToolOutput {
             #[serde(skip_serializing_if = "Option::is_none")]
             original_token_count: Option<usize>,
             output: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            raw_output: Option<String>,
         }
 
+        let raw_output = String::from_utf8_lossy(&self.raw_output).to_string();
+        let output = match self.max_output_tokens {
+            Some(max_tokens) => self.truncated_output(max_tokens),
+            None => raw_output.clone(),
+        };
+        let raw_output = (raw_output != output).then_some(raw_output);
         let result = UnifiedExecCodeModeResult {
             chunk_id: (!self.chunk_id.is_empty()).then(|| self.chunk_id.clone()),
             wall_time_seconds: self.wall_time.as_secs_f64(),
             exit_code: self.exit_code,
             session_id: self.process_id,
             original_token_count: self.original_token_count,
-            output: match self.max_output_tokens {
-                Some(max_tokens) => self.truncated_output(max_tokens),
-                None => String::from_utf8_lossy(&self.raw_output).to_string(),
-            },
+            output,
+            raw_output,
         };
 
         serde_json::to_value(result).unwrap_or_else(|err| {

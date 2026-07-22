@@ -12,8 +12,8 @@ use crate::config::ConfigOverrides;
 use crate::config::agent_roles::parse_agent_role_file_contents;
 use crate::config::deserialize_config_toml_with_base;
 use anyhow::anyhow;
-use codex_app_server_protocol::ConfigLayerSource;
 use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::ConfigToml;
@@ -313,6 +313,14 @@ mod built_in {
                     DEFAULT_ROLE_NAME.to_string(),
                     AgentRoleConfig {
                         description: Some("Default agent.".to_string()),
+                        config_file: None,
+                        nickname_candidates: None,
+                    }
+                ),
+                (
+                    "Explore".to_string(),
+                    AgentRoleConfig {
+                        description: Some("Read-only search agent for broad ZCode exploration.".to_string()),
                         config_file: None,
                         nickname_candidates: None,
                     }

@@ -3,6 +3,7 @@
 // - In --json mode, stdout must be valid JSONL, one event per line.
 // For both modes, any other output must be written to stderr.
 #![deny(clippy::print_stdout)]
+#![recursion_limit = "256"]
 
 mod cli;
 mod event_processor;
@@ -31,6 +32,8 @@ use codex_app_server_protocol::ReviewTarget as ApiReviewTarget;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::Thread as AppServerThread;
+use codex_app_server_protocol::ThreadCompactStartParams;
+use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadItem as AppServerThreadItem;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
@@ -66,6 +69,7 @@ use codex_core::config::ConfigTomlLoadResult;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_toml_with_layer_stack;
 use codex_core::config::resolve_bootstrap_auth_keyring_backend_kind;
+use codex_core::config::resolve_bootstrap_auth_route_config;
 use codex_core::config::resolve_oss_provider;
 use codex_core::config::resolve_profile_v2_config_path;
 use codex_core::find_thread_meta_by_name_str;
@@ -168,6 +172,7 @@ enum InitialOperation {
         items: Vec<UserInput>,
         output_schema: Option<Value>,
     },
+    Compact,
     Review {
         review_request: ReviewRequest,
     },
@@ -206,6 +211,7 @@ struct ExecRunArgs {
     state_db: Option<StateDbHandle>,
     command: Option<ExecCommand>,
     config: Config,
+    resume_approvals_reviewer_override: Option<codex_app_server_protocol::ApprovalsReviewer>,
     dangerously_bypass_approvals_and_sandbox: bool,
     exec_span: tracing::Span,
     images: Vec<PathBuf>,
@@ -350,6 +356,14 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         .chatgpt_base_url
         .clone()
         .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string());
+    let auth_route_config = resolve_bootstrap_auth_route_config(
+        bootstrap_config_toml,
+        bootstrap_config
+            .config_layer_stack
+            .requirements()
+            .feature_requirements
+            .as_ref(),
+    )?;
     let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
         codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
@@ -358,6 +372,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             .unwrap_or_default(),
         resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
         chatgpt_base_url,
+        auth_route_config,
     )
     .await;
     let run_cli_overrides = cli_kv_overrides.clone();
@@ -454,6 +469,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         build_config,
     )
     .await?;
+    let resume_approvals_reviewer_override = cli_kv_overrides
+        .iter()
+        .any(|(key, _)| key == "approvals_reviewer")
+        .then(|| config.approvals_reviewer.into());
 
     #[allow(clippy::print_stderr)]
     match check_execpolicy_for_warnings(&config.config_layer_stack).await {
@@ -469,6 +488,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
     set_default_client_residency_requirement(config.enforce_residency.value());
 
+    let auth_route_config = config.auth_route_config();
     if let Err(err) = enforce_login_restrictions(&AuthConfig {
         codex_home: config.codex_home.to_path_buf(),
         auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
@@ -476,7 +496,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         forced_login_method: config.forced_login_method,
         forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
         chatgpt_base_url: Some(config.chatgpt_base_url.clone()),
-        agent_identity_authapi_base_url: None,
+        auth_route_config,
     })
     .await
     {
@@ -555,8 +575,11 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
         client_name: "codex_exec".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: codex_product_info::Product::current()
+            .codex_compatibility_version()
+            .to_string(),
         experimental_api: true,
+        mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
@@ -565,6 +588,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         state_db,
         command,
         config,
+        resume_approvals_reviewer_override,
         dangerously_bypass_approvals_and_sandbox,
         exec_span: exec_span.clone(),
         images,
@@ -662,6 +686,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         state_db,
         command,
         config,
+        resume_approvals_reviewer_override,
         dangerously_bypass_approvals_and_sandbox,
         exec_span,
         images,
@@ -734,13 +759,15 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             });
             let output_schema = load_output_schema(output_schema_path.clone());
-            (
+            let operation = if is_exact_compact_prompt(&prompt_text) && items.len() == 1 {
+                InitialOperation::Compact
+            } else {
                 InitialOperation::UserTurn {
                     items,
                     output_schema,
-                },
-                prompt_text,
-            )
+                }
+            };
+            (operation, prompt_text)
         }
         (None, root_prompt, imgs) => {
             let prompt_text = resolve_root_prompt(root_prompt);
@@ -754,13 +781,15 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             });
             let output_schema = load_output_schema(output_schema_path);
-            (
+            let operation = if is_exact_compact_prompt(&prompt_text) && items.len() == 1 {
+                InitialOperation::Compact
+            } else {
                 InitialOperation::UserTurn {
                     items,
                     output_schema,
-                },
-                prompt_text,
-            )
+                }
+            };
+            (operation, prompt_text)
         }
     };
 
@@ -793,7 +822,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 &client,
                 ClientRequest::ThreadResume {
                     request_id: request_ids.next(),
-                    params: thread_resume_params_from_config(&config, thread_id),
+                    params: thread_resume_params_from_config(
+                        &config,
+                        thread_id,
+                        resume_approvals_reviewer_override,
+                    ),
                 },
                 "thread/resume",
             )
@@ -863,6 +896,10 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         }
     });
 
+    // Track whether a fatal error was reported by the server so we can
+    // exit with a non-zero status for automation-friendly signaling.
+    let mut error_seen = false;
+
     let task_id = match initial_operation {
         InitialOperation::UserTurn {
             items,
@@ -892,6 +929,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         personality: None,
                         output_schema,
                         collaboration_mode: None,
+                        multi_agent_mode: None,
                     },
                 },
                 "turn/start",
@@ -900,6 +938,25 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)?;
             let task_id = response.turn.id;
             info!("Sent prompt with event ID: {task_id}");
+            task_id
+        }
+        InitialOperation::Compact => {
+            let _: ThreadCompactStartResponse = send_request_with_response(
+                &client,
+                ClientRequest::ThreadCompactStart {
+                    request_id: request_ids.next(),
+                    params: ThreadCompactStartParams {
+                        thread_id: primary_thread_id_for_span.clone(),
+                    },
+                },
+                "thread/compact/start",
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+            let task_id =
+                wait_for_turn_started(&mut client, &primary_thread_id_for_span, &mut error_seen)
+                    .await?;
+            info!("Sent compact request with event ID: {task_id}");
             task_id
         }
         InitialOperation::Review { review_request } => {
@@ -931,9 +988,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     exec_span.record("turn.id", task_id.as_str());
 
     // Run the loop until the task is complete.
-    // Track whether a fatal error was reported by the server so we can
-    // exit with a non-zero status for automation-friendly signaling.
-    let mut error_seen = false;
     let mut interrupt_channel_open = true;
     let primary_thread_id_for_requests = primary_thread_id.to_string();
     loop {
@@ -1054,7 +1108,7 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
         cwd: Some(config.cwd.to_string_lossy().to_string()),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
-        approvals_reviewer: approvals_reviewer_override_from_config(config),
+        approvals_reviewer: Some(config.approvals_reviewer.into()),
         sandbox: sandbox.flatten(),
         permissions,
         config: thread_config_overrides_from_config(config),
@@ -1064,7 +1118,11 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
     }
 }
 
-fn thread_resume_params_from_config(config: &Config, thread_id: String) -> ThreadResumeParams {
+fn thread_resume_params_from_config(
+    config: &Config,
+    thread_id: String,
+    approvals_reviewer_override: Option<codex_app_server_protocol::ApprovalsReviewer>,
+) -> ThreadResumeParams {
     let permissions = permissions_selection_from_config(config);
     let sandbox = permissions.is_none().then(|| {
         sandbox_mode_from_permission_profile(
@@ -1079,7 +1137,7 @@ fn thread_resume_params_from_config(config: &Config, thread_id: String) -> Threa
         cwd: Some(config.cwd.to_string_lossy().to_string()),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
-        approvals_reviewer: approvals_reviewer_override_from_config(config),
+        approvals_reviewer: approvals_reviewer_override,
         sandbox: sandbox.flatten(),
         permissions,
         config: thread_config_overrides_from_config(config),
@@ -1127,12 +1185,6 @@ fn sandbox_mode_from_permission_profile(
             }
         }
     }
-}
-
-fn approvals_reviewer_override_from_config(
-    config: &Config,
-) -> Option<codex_app_server_protocol::ApprovalsReviewer> {
-    Some(config.approvals_reviewer.into())
 }
 
 async fn send_request_with_response<T>(
@@ -1459,6 +1511,7 @@ async fn resolve_resume_thread_id(
                         source_kinds: Some(all_thread_source_kinds()),
                         archived: Some(false),
                         parent_thread_id: None,
+                        ancestor_thread_id: None,
                         cwd: None,
                         use_state_db_only: false,
                         search_term: None,
@@ -1525,6 +1578,7 @@ async fn resolve_resume_thread_id(
                     source_kinds: Some(all_thread_source_kinds()),
                     archived: Some(false),
                     parent_thread_id: None,
+                    ancestor_thread_id: None,
                     cwd: None,
                     use_state_db_only: false,
                     search_term: Some(session_id.to_string()),
@@ -1719,6 +1773,15 @@ async fn handle_server_request(
             )
             .await
         }
+        ServerRequest::CurrentTimeRead { request_id, .. } => {
+            reject_server_request(
+                client,
+                request_id,
+                &method,
+                "external current time is not supported in exec mode".to_string(),
+            )
+            .await
+        }
         ServerRequest::ApplyPatchApproval { request_id, params } => {
             reject_server_request(
                 client,
@@ -1761,6 +1824,42 @@ async fn handle_server_request(
         *error_seen = true;
         warn!("{err}");
     }
+}
+
+async fn wait_for_turn_started(
+    client: &mut InProcessAppServerClient,
+    thread_id: &str,
+    error_seen: &mut bool,
+) -> anyhow::Result<String> {
+    while let Some(server_event) = client.next_event().await {
+        match server_event {
+            InProcessServerEvent::ServerRequest(request) => {
+                handle_server_request(client, request, error_seen).await;
+            }
+            InProcessServerEvent::ServerNotification(notification) => {
+                if let ServerNotification::Error(payload) = &notification
+                    && payload.thread_id == thread_id
+                    && !payload.will_retry
+                {
+                    *error_seen = true;
+                    return Err(anyhow::anyhow!("{}", payload.error.message));
+                }
+                if let ServerNotification::TurnStarted(payload) = notification
+                    && payload.thread_id == thread_id
+                {
+                    return Ok(payload.turn.id);
+                }
+            }
+            InProcessServerEvent::Lagged { skipped } => {
+                return Err(anyhow::anyhow!(
+                    "server event stream lagged while waiting for compact turn start; skipped {skipped} events"
+                ));
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "server closed before compact turn started for thread {thread_id}"
+    ))
 }
 
 fn load_output_schema(path: Option<PathBuf>) -> Option<Value> {
@@ -1946,6 +2045,10 @@ fn resolve_root_prompt(prompt_arg: Option<String>) -> String {
         }
         maybe_dash => resolve_prompt(maybe_dash),
     }
+}
+
+fn is_exact_compact_prompt(prompt: &str) -> bool {
+    prompt.trim() == "/compact"
 }
 
 fn build_review_request(args: &ReviewArgs) -> anyhow::Result<ReviewRequest> {

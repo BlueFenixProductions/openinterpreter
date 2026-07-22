@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::context::world_state::WorldState;
+use crate::harness::zcode;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -33,9 +37,9 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::ResponseItemMetadata;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -46,6 +50,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
+use serde_json::Value;
 use tracing::error;
 
 use codex_model_provider_info::ModelProviderInfo;
@@ -53,6 +58,7 @@ use codex_model_provider_info::ModelProviderInfo;
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+const ZCODE_RETAINED_READ_REMINDER_MAX_TOKENS: usize = 6_000;
 
 /// Controls whether compaction replacement history must include initial context.
 ///
@@ -63,10 +69,27 @@ const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 /// Mid-turn compaction must use `BeforeLastUserMessage` because the model is trained to see the
 /// compaction summary as the last item in history after mid-turn compaction; we therefore inject
 /// initial context into the replacement history just above the last real user message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum InitialContextInjection {
-    BeforeLastUserMessage,
+    BeforeLastUserMessage(Arc<WorldState>),
     DoNotInject,
+}
+
+pub(crate) async fn build_compaction_initial_context(
+    sess: &Session,
+    turn_context: &TurnContext,
+    initial_context_injection: &InitialContextInjection,
+) -> (Vec<ResponseItem>, Option<Arc<WorldState>>) {
+    // Return the rendered state with its items so history and its baseline stay identical.
+    match initial_context_injection {
+        InitialContextInjection::BeforeLastUserMessage(world_state) => {
+            let items = sess
+                .build_initial_context_with_world_state(turn_context, world_state.as_ref())
+                .await;
+            (items, Some(Arc::clone(world_state)))
+        }
+        InitialContextInjection::DoNotInject => (Vec::new(), None),
+    }
 }
 
 pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
@@ -118,6 +141,16 @@ pub(crate) async fn run_compact_task(
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
     });
     sess.send_event(&turn_context, start_event).await;
+    if should_skip_zcode_manual_compact(sess.as_ref(), turn_context.as_ref()).await {
+        sess.send_event(
+            &turn_context,
+            EventMsg::Warning(WarningEvent {
+                message: "Context is up to date; no compression needed".to_string(),
+            }),
+        )
+        .await;
+        return Ok(());
+    }
     run_compact_task_inner(
         sess.clone(),
         turn_context,
@@ -129,6 +162,40 @@ pub(crate) async fn run_compact_task(
     )
     .await?;
     Ok(())
+}
+
+pub(crate) async fn should_skip_zcode_manual_compact(
+    sess: &Session,
+    turn_context: &TurnContext,
+) -> bool {
+    if turn_context.config.harness.as_deref() != Some("zcode") {
+        return false;
+    }
+    let history = sess.clone_history().await;
+    !history
+        .raw_items()
+        .iter()
+        .any(is_zcode_compactable_history_item)
+}
+
+fn is_zcode_compactable_history_item(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message { role, .. } if role == "assistant"
+    ) || matches!(
+        item,
+        ResponseItem::Reasoning { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::FunctionCallOutput { .. }
+            | ResponseItem::AgentMessage { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+    )
 }
 
 async fn run_compact_task_inner(
@@ -262,8 +329,14 @@ async fn run_compact_task_inner_impl(
             Ok(()) => {
                 break;
             }
-            Err(CodexErr::Interrupted) => {
-                return Err(CodexErr::Interrupted);
+            Err(err @ (CodexErr::Interrupted | CodexErr::TurnAborted)) => {
+                return Err(err);
+            }
+            Err(e @ CodexErr::SessionBudgetExceeded) => {
+                sess.track_turn_codex_error(turn_context.as_ref(), &e);
+                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                sess.send_event(&turn_context, event).await;
+                return Err(e);
             }
             Err(e @ CodexErr::ContextWindowExceeded) => {
                 if turn_input_len > 1 {
@@ -282,7 +355,7 @@ async fn run_compact_task_inner_impl(
                 return Err(e);
             }
             Err(e) => {
-                if retries < max_retries {
+                if should_retry_failed_compact(turn_context.as_ref()) && retries < max_retries {
                     retries += 1;
                     let delay = backoff(retries);
                     sess.notify_stream_error(
@@ -294,6 +367,9 @@ async fn run_compact_task_inner_impl(
                     tokio::time::sleep(delay).await;
                     continue;
                 } else {
+                    if should_advance_window_after_failed_compact(turn_context.as_ref()) {
+                        sess.advance_auto_compact_window().await;
+                    }
                     sess.track_turn_codex_error(turn_context.as_ref(), &e);
                     let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                     sess.send_event(&turn_context, event).await;
@@ -306,31 +382,48 @@ async fn run_compact_task_inner_impl(
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
     let user_messages = collect_user_messages(history_items);
 
-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
-    let window_id = sess.advance_auto_compact_window_id().await;
+    let (mut new_history, summary_text) = build_harness_compacted_history(
+        turn_context.as_ref(),
+        history_items,
+        &user_messages,
+        &summary_suffix,
+    );
+    let (window_number, window_ids) = sess.advance_auto_compact_window().await;
 
-    if matches!(
-        initial_context_injection,
-        InitialContextInjection::BeforeLastUserMessage
-    ) {
-        let initial_context = sess.build_initial_context(turn_context.as_ref()).await;
+    let (initial_context, world_state_baseline) = build_compaction_initial_context(
+        sess.as_ref(),
+        turn_context.as_ref(),
+        &initial_context_injection,
+    )
+    .await;
+    if !initial_context.is_empty() {
         new_history =
             insert_initial_context_before_last_real_user_or_summary(new_history, initial_context);
     }
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage => Some(turn_context.to_turn_context_item()),
+        InitialContextInjection::BeforeLastUserMessage(_) => {
+            Some(turn_context.to_turn_context_item())
+        }
     };
     let compacted_item = CompactedItem {
         message: summary_text.clone(),
         replacement_history: Some(new_history.clone()),
-        window_id: Some(window_id),
+        window_number: Some(window_number),
+        first_window_id: Some(window_ids.first_window_id.to_string()),
+        previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
+        window_id: Some(window_ids.window_id.to_string()),
     };
-    sess.replace_compacted_history(new_history, reference_context_item, compacted_item)
-        .await;
+    sess.replace_compacted_history(
+        turn_context.as_ref(),
+        new_history,
+        reference_context_item,
+        world_state_baseline,
+        compacted_item,
+    )
+    .await;
     sess.recompute_token_usage(&turn_context).await;
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)
@@ -340,6 +433,14 @@ async fn run_compact_task_inner_impl(
     });
     sess.send_event(&turn_context, warning).await;
     Ok(summary_suffix)
+}
+
+fn should_advance_window_after_failed_compact(turn_context: &TurnContext) -> bool {
+    turn_context.config.harness.as_deref() == Some("zcode")
+}
+
+fn should_retry_failed_compact(turn_context: &TurnContext) -> bool {
+    turn_context.config.harness.as_deref() != Some("zcode")
 }
 
 pub(crate) struct CompactionAnalyticsAttempt {
@@ -459,7 +560,7 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CompactedUserMessage {
     message: String,
-    metadata: Option<ResponseItemMetadata>,
+    internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
 }
 
 pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<CompactedUserMessage> {
@@ -472,8 +573,11 @@ pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<CompactedUser
                 } else {
                     Some(CompactedUserMessage {
                         message: user.message(),
-                        metadata: match item {
-                            ResponseItem::Message { metadata, .. } => metadata.clone(),
+                        internal_chat_message_metadata_passthrough: match item {
+                            ResponseItem::Message {
+                                internal_chat_message_metadata_passthrough,
+                                ..
+                            } => internal_chat_message_metadata_passthrough.clone(),
                             _ => None,
                         },
                     })
@@ -558,6 +662,216 @@ pub(crate) fn build_compacted_history(
     )
 }
 
+fn build_harness_compacted_history(
+    turn_context: &TurnContext,
+    history_items: &[ResponseItem],
+    user_messages: &[CompactedUserMessage],
+    summary_suffix: &str,
+) -> (Vec<ResponseItem>, String) {
+    if turn_context.config.harness.as_deref() == Some("zcode") {
+        let summary_item = zcode::compacted_summary_item(summary_suffix);
+        let summary_text = content_items_to_text(match &summary_item {
+            ResponseItem::Message { content, .. } => content,
+            _ => &[],
+        })
+        .unwrap_or_default();
+        let mut history = vec![summary_item];
+        history.extend(zcode_retained_compacted_user_messages(history_items));
+        (history, summary_text)
+    } else {
+        let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+        (
+            build_compacted_history(Vec::new(), user_messages, &summary_text),
+            summary_text,
+        )
+    }
+}
+
+fn zcode_retained_compacted_user_messages(history_items: &[ResponseItem]) -> Vec<ResponseItem> {
+    let mut selected_messages: Vec<(String, Option<InternalChatMessageMetadataPassthrough>)> =
+        zcode_retained_read_tool_reminders(history_items)
+            .into_iter()
+            .map(|message| (message, None))
+            .collect();
+    let mut remaining = COMPACT_USER_MESSAGE_MAX_TOKENS;
+    for (message, _) in &selected_messages {
+        remaining = remaining.saturating_sub(approx_token_count(message));
+    }
+    for item in history_items.iter().rev() {
+        let ResponseItem::Message {
+            role,
+            content,
+            internal_chat_message_metadata_passthrough: metadata,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        if role != "user" {
+            continue;
+        }
+        let Some(message) = content_items_to_text(content) else {
+            continue;
+        };
+        if !zcode_should_retain_compacted_user_message(&message) {
+            continue;
+        }
+        if remaining == 0 {
+            break;
+        }
+        let tokens = approx_token_count(&message);
+        if tokens <= remaining {
+            selected_messages.push((message, metadata.clone()));
+            remaining = remaining.saturating_sub(tokens);
+        } else {
+            let truncated = truncate_text(&message, TruncationPolicy::Tokens(remaining));
+            selected_messages.push((truncated, metadata.clone()));
+            break;
+        }
+    }
+    selected_messages
+        .into_iter()
+        .map(|(message, metadata)| ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: message }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: metadata,
+        })
+        .collect()
+}
+
+fn zcode_retained_read_tool_reminders(history_items: &[ResponseItem]) -> Vec<String> {
+    let read_outputs_by_file_path = zcode_successful_read_outputs_by_file_path(history_items);
+    let mut selected_messages = Vec::new();
+    let mut seen_file_paths = HashSet::new();
+    let mut remaining = COMPACT_USER_MESSAGE_MAX_TOKENS;
+
+    for item in history_items.iter().rev() {
+        let ResponseItem::FunctionCall {
+            name,
+            arguments,
+            call_id: _,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        if name != "Read" {
+            continue;
+        }
+        let Some(file_path) = zcode_whole_file_read_path(arguments) else {
+            continue;
+        };
+        if !seen_file_paths.insert(file_path.clone()) {
+            continue;
+        }
+        let Some(output) = read_outputs_by_file_path
+            .get(&file_path)
+            .cloned()
+            .or_else(|| zcode_read_file_for_reminder(&file_path))
+        else {
+            continue;
+        };
+        let message = zcode_read_tool_reminder(arguments, output);
+        let tokens = approx_token_count(&message);
+        if tokens > ZCODE_RETAINED_READ_REMINDER_MAX_TOKENS || tokens > remaining {
+            continue;
+        }
+        selected_messages.push(message);
+        remaining = remaining.saturating_sub(tokens);
+    }
+
+    selected_messages
+}
+
+fn zcode_successful_read_outputs_by_file_path(
+    history_items: &[ResponseItem],
+) -> HashMap<String, String> {
+    let mut pending_read_paths: HashMap<String, String> = HashMap::new();
+    let mut outputs_by_file_path = HashMap::new();
+
+    for item in history_items {
+        match item {
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } if name == "Read" => {
+                if let Some(file_path) = zcode_whole_file_read_path(arguments) {
+                    pending_read_paths.insert(call_id.clone(), file_path);
+                }
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
+                let Some(file_path) = pending_read_paths.remove(call_id) else {
+                    continue;
+                };
+                let output_text = output.body.to_text().unwrap_or_else(|| output.to_string());
+                if zcode_read_output_is_wasted_call(&output_text) {
+                    continue;
+                }
+                outputs_by_file_path.insert(
+                    file_path,
+                    zcode_normalize_read_output_for_reminder(&output_text),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    outputs_by_file_path
+}
+
+fn zcode_whole_file_read_path(arguments: &str) -> Option<String> {
+    let input: Value = serde_json::from_str(arguments).ok()?;
+    let object = input.as_object()?;
+    if object.contains_key("offset") || object.contains_key("limit") {
+        return None;
+    }
+    object
+        .get("file_path")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn zcode_read_output_is_wasted_call(output: &str) -> bool {
+    output.starts_with("Wasted call")
+}
+
+fn zcode_normalize_read_output_for_reminder(output: &str) -> String {
+    output
+        .strip_prefix("<open-interpreter-harness-no-truncate>\n")
+        .unwrap_or(output)
+        .to_string()
+}
+
+fn zcode_read_file_for_reminder(file_path: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(file_path).ok()?;
+    Some(
+        contents
+            .split('\n')
+            .enumerate()
+            .map(|(index, line)| format!("{}\t{line}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn zcode_read_tool_reminder(arguments: &str, output: String) -> String {
+    format!(
+        "<system-reminder>\nCalled the Read tool with the following input: {arguments}\nResult of calling the Read tool:\n{output}\n</system-reminder>"
+    )
+}
+
+fn zcode_should_retain_compacted_user_message(message: &str) -> bool {
+    message
+        .trim_start()
+        .starts_with("<system-reminder>\nCalled the Read tool")
+}
+
 fn build_compacted_history_with_limit(
     mut history: Vec<ResponseItem>,
     user_messages: &[CompactedUserMessage],
@@ -580,7 +894,9 @@ fn build_compacted_history_with_limit(
                     truncate_text(&message.message, TruncationPolicy::Tokens(remaining));
                 selected_messages.push(CompactedUserMessage {
                     message: truncated,
-                    metadata: message.metadata.clone(),
+                    internal_chat_message_metadata_passthrough: message
+                        .internal_chat_message_metadata_passthrough
+                        .clone(),
                 });
                 break;
             }
@@ -596,7 +912,9 @@ fn build_compacted_history_with_limit(
                 text: message.message.clone(),
             }],
             phase: None,
-            metadata: message.metadata.clone(),
+            internal_chat_message_metadata_passthrough: message
+                .internal_chat_message_metadata_passthrough
+                .clone(),
         });
     }
 
@@ -611,7 +929,7 @@ fn build_compacted_history_with_limit(
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text: summary_text }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     });
 
     history
@@ -659,7 +977,7 @@ async fn drain_to_completed(
             }
             Ok(ResponseEvent::Completed { token_usage, .. }) => {
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
-                    .await;
+                    .await?;
                 return Ok(());
             }
             Ok(_) => continue,

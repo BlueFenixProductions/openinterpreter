@@ -483,6 +483,7 @@ mod thread_processor_behavior_tests {
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Cli,
+            history_mode: Default::default(),
             thread_source: Some(codex_protocol::protocol::ThreadSource::User),
             agent_nickname: None,
             agent_role: None,
@@ -778,9 +779,11 @@ mod thread_processor_behavior_tests {
                 },
             },
             session_source: SessionSource::Cli,
+            history_mode: Default::default(),
             forked_from_thread_id: None,
             parent_thread_id: None,
             thread_source: None,
+            originator: "test_originator".to_string(),
         };
 
         assert_eq!(
@@ -1004,6 +1007,7 @@ mod thread_processor_behavior_tests {
         let timestamp = "2025-09-05T16:53:11.850Z".to_string();
 
         let session_meta = SessionMeta {
+            session_id: conversation_id.into(),
             id: conversation_id,
             timestamp: timestamp.clone(),
             model_provider: None,
@@ -1060,6 +1064,7 @@ mod thread_processor_behavior_tests {
         let timestamp = "2025-09-05T16:53:11.850Z".to_string();
 
         let session_meta = SessionMeta {
+            session_id: parent_thread_id.into(),
             id: conversation_id,
             timestamp: timestamp.clone(),
             source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -1110,6 +1115,7 @@ mod thread_processor_behavior_tests {
         let timestamp = "2025-09-05T16:53:11.850Z".to_string();
 
         let session_meta = SessionMeta {
+            session_id: conversation_id.into(),
             id: conversation_id,
             forked_from_id: Some(forked_from_id),
             timestamp: timestamp.clone(),
@@ -1379,6 +1385,31 @@ mod thread_processor_behavior_tests {
             .expect("timed out waiting for subscriber update")
             .expect("has-connections watcher should remain open");
         assert!(*has_connections.borrow());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_for_thread_subscriber_unblocks_after_connection_attaches() -> Result<()> {
+        let manager = ThreadStateManager::new();
+        let thread_id = ThreadId::from_string("ba62fd70-2ec2-4b1b-9d94-355694332dd2")?;
+        let connection = ConnectionId(1);
+        manager
+            .connection_initialized(connection, ConnectionCapabilities::default())
+            .await;
+
+        let wait_for_subscriber = manager.wait_for_thread_subscriber(thread_id);
+        let attach_connection = async {
+            tokio::task::yield_now().await;
+            manager
+                .try_add_connection_to_thread(thread_id, connection)
+                .await
+        };
+        let ((), attached) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(wait_for_subscriber, attach_connection)
+        })
+        .await?;
+
+        assert!(attached);
         Ok(())
     }
 
